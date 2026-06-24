@@ -6,9 +6,18 @@ export type ReservationStatus =
   | "REJECTED"
   | "CANCELLED";
 
+export type TimeSelectionMode = "host-availability" | "guest-reservation";
+
+export type TimeRangeAvailability = "available" | "waitlist" | "blocked";
+
 export type TimeRange = {
   startAt: string;
   endAt: string;
+};
+
+export type SelectedTimeRange = TimeRange & {
+  id: string;
+  availability: TimeRangeAvailability;
 };
 
 export type ParticipantDraft = {
