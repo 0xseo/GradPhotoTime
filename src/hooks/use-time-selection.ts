@@ -197,8 +197,8 @@ export function useTimeSelection({
       onPointerMove: handlePointerMove,
       onPointerUp: handlePointerUp,
       style: {
-        touchAction: "none",
-        userSelect: "none",
+        touchAction: "none" as const,
+        userSelect: "none" as const,
       },
     },
     isDragging,

@@ -1,5 +1,7 @@
 import { CalendarShell } from "@/components/calendar/calendar-shell";
 import { HostDashboardShell } from "@/components/host/host-dashboard-shell";
+import { listTimeBlocks } from "@/app/actions/time-blocks";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type HostEventPageProps = {
   params: Promise<{
@@ -9,10 +11,45 @@ type HostEventPageProps = {
 
 export default async function HostEventPage({ params }: HostEventPageProps) {
   const { eventId } = await params;
+  const supabase = await createSupabaseServerClient();
+  const { data: event, error } = await supabase
+    .from("events")
+    .select(
+      "id,event_code,title,description,date_start,date_end,daily_start_time,daily_end_time,timezone,buffer_time_minutes,is_buffer_active",
+    )
+    .eq("id", eventId)
+    .single();
+
+  if (error || !event) {
+    return (
+      <CalendarShell eyebrow="Host" title="이벤트를 열 수 없습니다">
+        <p className="rounded-md border border-border bg-muted p-4 text-sm text-muted-foreground">
+          로그인한 Host만 이벤트를 관리할 수 있습니다.
+        </p>
+      </CalendarShell>
+    );
+  }
+
+  const scheduleResult = await listTimeBlocks({ eventId });
 
   return (
-    <CalendarShell eyebrow="Host" title={`이벤트 ${eventId}`}>
-      <HostDashboardShell />
+    <CalendarShell eyebrow="Host" title={event.title}>
+      {event.description ? (
+        <p className="mb-5 max-w-2xl text-sm leading-6 text-muted-foreground">
+          {event.description}
+        </p>
+      ) : null}
+      {scheduleResult.ok ? (
+        <HostDashboardShell
+          event={event}
+          reservationSlots={scheduleResult.data.reservationSlots}
+          timeBlocks={scheduleResult.data.timeBlocks}
+        />
+      ) : (
+        <p className="rounded-md border border-danger/30 bg-red-50 p-4 text-sm text-danger">
+          {scheduleResult.error}
+        </p>
+      )}
     </CalendarShell>
   );
 }
