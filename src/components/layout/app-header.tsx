@@ -25,7 +25,7 @@ export async function AppHeader({ ctaHref, ctaLabel }: AppHeaderProps) {
         {user ? (
           <>
             <span className="hidden max-w-40 truncate text-sm text-muted-foreground sm:inline">
-              {user.email ?? user.phone ?? "로그인됨"}
+              {user.email ?? "로그인됨"}
             </span>
             <SignOutButton />
           </>

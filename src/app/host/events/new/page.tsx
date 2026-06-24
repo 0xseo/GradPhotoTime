@@ -28,8 +28,8 @@ export default async function NewEventPage() {
               로그인 후 이벤트를 만들 수 있습니다.
             </p>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
-              Host 일정은 본인 계정과 연결되어야 하므로 이메일 또는 전화번호
-              인증이 필요합니다.
+              Host 일정은 본인 계정과 연결되어야 하므로 이메일 인증이
+              필요합니다.
             </p>
             <Link
               className={buttonVariants({ className: "mt-5" })}

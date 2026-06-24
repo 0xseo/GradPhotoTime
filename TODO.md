@@ -4,13 +4,20 @@
 
 - Restrict event creation to authenticated users only. (Implemented in Server Actions and UI gate.)
 - Web auth: support email-based sign up/sign in. (Implemented with Supabase OTP magic link.)
-- Web auth: support phone number verification sign up/sign in. (Implemented in UI/actions; requires Supabase SMS provider configuration.)
+- Web auth: keep phone number verification deferred until a paid SMS provider and rate-limit policy are chosen.
+- Korean production SMS option: evaluate Supabase Send SMS Auth Hook with a domestic provider such as Solapi/CoolSMS or Naver SENS.
 - Mobile app auth: add Kakao SDK sign in for the Expo/WebView package.
 - Mobile app auth: add Google SDK sign in for the Expo/WebView package.
-- Keep guest reservation access code flows available for non-member participants.
+- Keep guest reservation access code flows available for non-member participants. (Implemented for view/edit/cancel.)
 
-## Upcoming PRD Steps
+## Implemented PRD Steps
 
 - Step 3: Zustand state structure and drag time selection domain logic.
-- Step 4: Server Actions for events, time blocks, event code lookup, and reservations.
+- Step 4: Server Actions for events, time blocks, event code lookup, reservations, and Host approval.
 - Step 5: Mobile-first Host and Guest UI implementation.
+
+## Next
+
+- Add automated tests for buffer-time conflict checks and reservation code management. (Started with reservation rule unit tests.)
+- Add deployment configuration and Supabase production redirect URLs.
+- Package Expo WebView shell after web flow stabilizes.

@@ -23,8 +23,7 @@ export default function AuthPage() {
               촬영 일정을 열려면 먼저 로그인하세요.
             </h1>
             <p className="max-w-lg text-base leading-7 text-muted-foreground">
-              웹에서는 이메일 링크 또는 전화번호 인증으로 가입과 로그인을
-              처리합니다.
+              웹에서는 이메일 링크로 가입과 로그인을 처리합니다.
             </p>
           </div>
 

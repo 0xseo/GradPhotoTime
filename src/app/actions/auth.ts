@@ -5,12 +5,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { actionError, actionOk, type ActionResult } from "@/lib/actions/result";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import {
-  optionalText,
-  requireEmail,
-  requireOtp,
-  requirePhone,
-} from "@/lib/validators/action-inputs";
+import { optionalText, requireEmail } from "@/lib/validators/action-inputs";
 
 type AuthNoticeData = {
   message: string;
@@ -38,62 +33,6 @@ export async function sendEmailSignInLink(input: {
 
     return actionOk({
       message: "이메일로 로그인 링크를 보냈습니다.",
-    });
-  } catch (error) {
-    return actionError(getErrorMessage(error));
-  }
-}
-
-export async function sendPhoneSignInCode(input: {
-  phone: string;
-}): Promise<ActionResult<AuthNoticeData>> {
-  try {
-    const phone = requirePhone(input.phone);
-    const supabase = await createSupabaseServerClient();
-    const { error } = await supabase.auth.signInWithOtp({
-      phone,
-      options: {
-        shouldCreateUser: true,
-      },
-    });
-
-    if (error) {
-      return actionError(error.message);
-    }
-
-    return actionOk({
-      message: "휴대폰으로 인증번호를 보냈습니다.",
-    });
-  } catch (error) {
-    return actionError(getErrorMessage(error));
-  }
-}
-
-export async function verifyPhoneSignInCode(input: {
-  phone: string;
-  redirectTo?: string | null;
-  token: string;
-}): Promise<ActionResult<AuthNoticeData>> {
-  try {
-    const phone = requirePhone(input.phone);
-    const token = requireOtp(input.token);
-    const redirectTo = getRedirectPath(input.redirectTo);
-    const supabase = await createSupabaseServerClient();
-    const { error } = await supabase.auth.verifyOtp({
-      phone,
-      token,
-      type: "sms",
-    });
-
-    if (error) {
-      return actionError(error.message);
-    }
-
-    revalidatePath("/");
-    revalidatePath(redirectTo);
-
-    return actionOk({
-      message: "로그인되었습니다.",
     });
   } catch (error) {
     return actionError(getErrorMessage(error));

@@ -18,12 +18,14 @@ import type { SelectedTimeRange, TimeRange, TimeSelectionMode } from "@/types/do
 type TimeSelectionGridProps = {
   allowWaitlist?: boolean;
   blockedRanges?: TimeRange[];
+  bufferRanges?: TimeRange[];
   dailyEndTime: string;
   dailyStartTime: string;
   dateEnd: string;
   dateStart: string;
   mode: TimeSelectionMode;
   occupiedRanges?: TimeRange[];
+  readOnly?: boolean;
   reservationSlots?: EventScheduleSlot[];
   selectedRanges: SelectedTimeRange[];
   slotMinutes?: number;
@@ -33,12 +35,14 @@ type TimeSelectionGridProps = {
 export function TimeSelectionGrid({
   allowWaitlist = false,
   blockedRanges = [],
+  bufferRanges = [],
   dailyEndTime,
   dailyStartTime,
   dateEnd,
   dateStart,
   mode,
   occupiedRanges = [],
+  readOnly = false,
   reservationSlots = [],
   selectedRanges,
   slotMinutes = 30,
@@ -78,12 +82,14 @@ export function TimeSelectionGrid({
           <DaySelectionGrid
             allowWaitlist={allowWaitlist}
             blockedRanges={blockedRanges}
+            bufferRanges={bufferRanges}
             dailyEndTime={dailyEndTime}
             dailyStartTime={dailyStartTime}
             date={day.date}
             key={day.date}
             mode={mode}
             occupiedRanges={occupiedRanges}
+            readOnly={readOnly}
             reservationSlots={reservationSlots}
             selectedRanges={selectedRanges}
             slotMinutes={slotMinutes}
@@ -129,11 +135,13 @@ function TimeAxis({
 function DaySelectionGrid({
   allowWaitlist,
   blockedRanges = [],
+  bufferRanges = [],
   dailyEndTime,
   dailyStartTime,
   date,
   mode,
   occupiedRanges = [],
+  readOnly = false,
   reservationSlots = [],
   selectedRanges,
   slotMinutes = 30,
@@ -162,6 +170,9 @@ function DaySelectionGrid({
       slotMinutes,
     });
   const dayBlocks = timeBlocks.filter((block) => isSameDate(block.start_at, date));
+  const dayBufferRanges = bufferRanges.filter((range) =>
+    isSameDate(range.startAt, date),
+  );
   const daySlots = reservationSlots.filter((slot) => isSameDate(slot.start_at, date));
   const daySelections = selectedRanges.filter((range) =>
     isSameDate(range.startAt, date),
@@ -176,7 +187,7 @@ function DaySelectionGrid({
     <div
       className="relative h-[34rem] overflow-hidden border-r border-border bg-white last:border-r-0"
       ref={gridRef}
-      {...gridProps}
+      {...(readOnly ? {} : gridProps)}
     >
       <div
         aria-hidden="true"
@@ -196,6 +207,17 @@ function DaySelectionGrid({
           label={block.type === "AVAILABLE" ? "가능" : "불가"}
           range={{ endAt: block.end_at, startAt: block.start_at }}
           tone={block.type === "AVAILABLE" ? "available-soft" : "blocked"}
+        />
+      ))}
+
+      {dayBufferRanges.map((range) => (
+        <RangeBlock
+          gridEndAt={gridEndAt}
+          gridStartAt={gridStartAt}
+          key={`${range.startAt}-${range.endAt}`}
+          label="버퍼"
+          range={range}
+          tone="buffer"
         />
       ))}
 
@@ -221,7 +243,7 @@ function DaySelectionGrid({
         />
       ))}
 
-      {draftRange && isSameDate(draftRange.startAt, date) ? (
+      {!readOnly && draftRange && isSameDate(draftRange.startAt, date) ? (
         <RangeBlock
           gridEndAt={gridEndAt}
           gridStartAt={gridStartAt}
@@ -231,7 +253,7 @@ function DaySelectionGrid({
         />
       ) : null}
 
-      {isDragging ? (
+      {!readOnly && isDragging ? (
         <div className="pointer-events-none absolute inset-x-2 bottom-2 rounded-md border border-primary bg-white/95 px-2 py-1 text-center text-xs font-medium text-primary shadow-sm">
           드래그 중
         </div>
@@ -243,6 +265,7 @@ function DaySelectionGrid({
 type RangeTone =
   | "available-soft"
   | "blocked"
+  | "buffer"
   | "confirmed"
   | "draft"
   | "selected"
@@ -275,6 +298,8 @@ function RangeBlock({
           "border-emerald-200 bg-emerald-50 text-emerald-800",
         tone === "blocked" &&
           "border-zinc-300 bg-zinc-100 text-zinc-600 opacity-90",
+        tone === "buffer" &&
+          "border-slate-200 bg-[repeating-linear-gradient(135deg,#f1f5f9_0,#f1f5f9_5px,#e2e8f0_5px,#e2e8f0_10px)] text-slate-600",
         tone === "confirmed" &&
           "border-primary bg-primary text-primary-foreground",
         tone === "draft" && "border-accent bg-accent-soft text-accent",

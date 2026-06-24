@@ -13,6 +13,7 @@ import {
   requireInteger,
   requireText,
   requireTime,
+  requireUuid,
 } from "@/lib/validators/action-inputs";
 
 export type PublicEvent = Pick<
@@ -116,6 +117,54 @@ export async function verifyEventCode(
     if (error || !data) {
       return actionError("존재하지 않는 이벤트 코드입니다.");
     }
+
+    return actionOk({ event: mapPublicEvent(data) });
+  } catch (error) {
+    return actionError(getErrorMessage(error));
+  }
+}
+
+export type UpdateEventBufferInput = {
+  bufferTimeMinutes: number;
+  eventId: string;
+  isBufferActive: boolean;
+};
+
+export type UpdateEventBufferData = {
+  event: PublicEvent;
+};
+
+export async function updateEventBufferSettings(
+  input: UpdateEventBufferInput,
+): Promise<ActionResult<UpdateEventBufferData>> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const eventId = requireUuid(input.eventId, "eventId");
+    const bufferTimeMinutes = requireInteger(
+      input.bufferTimeMinutes,
+      "bufferTimeMinutes",
+      0,
+      180,
+    );
+    const isBufferActive = optionalBoolean(input.isBufferActive, false);
+    const { data, error } = await supabase
+      .from("events")
+      .update({
+        buffer_time_minutes: bufferTimeMinutes,
+        is_buffer_active: isBufferActive,
+      })
+      .eq("id", eventId)
+      .select(
+        "id,event_code,title,description,date_start,date_end,daily_start_time,daily_end_time,timezone,buffer_time_minutes,is_buffer_active",
+      )
+      .single();
+
+    if (error || !data) {
+      return actionError("버퍼 설정을 저장할 수 없습니다.");
+    }
+
+    revalidatePath(`/host/events/${data.id}`);
+    revalidatePath(`/event/${data.event_code}`);
 
     return actionOk({ event: mapPublicEvent(data) });
   } catch (error) {

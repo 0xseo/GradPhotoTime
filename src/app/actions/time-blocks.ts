@@ -195,14 +195,25 @@ async function listReservationSlotsForEvent(
     reservations?.map((reservation) => [reservation.id, reservation.status]) ?? [],
   );
 
-  return slots.map<EventScheduleSlot>((slot) => ({
-    end_at: slot.end_at,
-    id: slot.id,
-    is_confirmed: slot.is_confirmed,
-    reservation_id: slot.reservation_id,
-    reservationStatus: statusByReservationId.get(slot.reservation_id) ?? "PENDING",
-    start_at: slot.start_at,
-  }));
+  return slots.flatMap<EventScheduleSlot>((slot) => {
+    const reservationStatus =
+      statusByReservationId.get(slot.reservation_id) ?? "PENDING";
+
+    if (reservationStatus === "REJECTED" || reservationStatus === "CANCELLED") {
+      return [];
+    }
+
+    return [
+      {
+        end_at: slot.end_at,
+        id: slot.id,
+        is_confirmed: slot.is_confirmed,
+        reservation_id: slot.reservation_id,
+        reservationStatus,
+        start_at: slot.start_at,
+      },
+    ];
+  });
 }
 
 function parseTimeBlockDrafts(blocks: TimeBlockDraft[]) {

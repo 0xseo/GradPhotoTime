@@ -86,6 +86,31 @@ export function expandRangeByMinutes(
   };
 }
 
+export function buildBufferTimeRanges(ranges: TimeRange[], bufferMinutes: number) {
+  if (bufferMinutes <= 0) {
+    return [];
+  }
+
+  return mergeTimeRanges(
+    ranges.flatMap((range) => {
+      const start = new Date(range.startAt).getTime();
+      const end = new Date(range.endAt).getTime();
+      const bufferMs = bufferMinutes * MINUTE_IN_MS;
+
+      return [
+        {
+          startAt: new Date(start - bufferMs).toISOString(),
+          endAt: range.startAt,
+        },
+        {
+          startAt: range.endAt,
+          endAt: new Date(end + bufferMs).toISOString(),
+        },
+      ].filter(isValidTimeRange);
+    }),
+  );
+}
+
 export function clampRangeToGrid(range: TimeRange, config: TimeGridConfig) {
   const gridStart = getGridStart(config);
   const gridEnd = getGridEnd(config);

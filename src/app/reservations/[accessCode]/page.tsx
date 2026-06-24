@@ -1,4 +1,6 @@
 import { CalendarShell } from "@/components/calendar/calendar-shell";
+import { ReservationManagementShell } from "@/components/guest/reservation-management-shell";
+import { getReservationManagementView } from "@/app/actions/reservations";
 
 type ReservationPageProps = {
   params: Promise<{
@@ -8,18 +10,34 @@ type ReservationPageProps = {
 
 export default async function ReservationPage({ params }: ReservationPageProps) {
   const { accessCode } = await params;
+  const result = await getReservationManagementView({
+    reservationAccessCode: accessCode,
+  });
+
+  if (!result.ok) {
+    return (
+      <CalendarShell
+        eyebrow="Reservation"
+        title={`예약 관리 코드 ${accessCode.toUpperCase()}`}
+      >
+        <p className="rounded-md border border-danger/30 bg-red-50 p-4 text-sm text-danger">
+          {result.error}
+        </p>
+      </CalendarShell>
+    );
+  }
 
   return (
     <CalendarShell
       eyebrow="Reservation"
-      title={`예약 관리 코드 ${accessCode.toUpperCase()}`}
+      title={result.data.event.title}
     >
-      <div className="border border-border bg-muted p-5">
-        <p className="text-sm leading-6 text-muted-foreground">
-          예약 관리 화면은 예약 코드와 선택 비밀번호 검증 후 참여자와 후보
-          시간을 수정하는 흐름으로 연결됩니다.
+      {result.data.event.description ? (
+        <p className="mb-5 max-w-2xl text-sm leading-6 text-muted-foreground">
+          {result.data.event.description}
         </p>
-      </div>
+      ) : null}
+      <ReservationManagementShell {...result.data} />
     </CalendarShell>
   );
 }

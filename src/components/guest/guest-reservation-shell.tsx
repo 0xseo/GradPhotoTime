@@ -10,6 +10,7 @@ import { TimeSelectionGrid } from "@/components/calendar/time-selection-grid";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { formatTimeRange } from "@/lib/time/event-days";
+import { buildBufferTimeRanges } from "@/lib/time/ranges";
 import { useSelectionStore } from "@/store/use-selection-store";
 import type { Tables } from "@/lib/supabase/database.types";
 import type { TimeRange } from "@/types/domain";
@@ -30,15 +31,34 @@ export function GuestReservationShell({
   const [isPending, setIsPending] = useState(false);
   const clearSelection = useSelectionStore((state) => state.clearSelection);
   const selectedRanges = useSelectionStore((state) => state.selectedRanges);
-  const blockedRanges = useMemo<TimeRange[]>(
+  const confirmedRanges = useMemo<TimeRange[]>(
     () =>
-      timeBlocks
+      reservationSlots
+        .filter((slot) => slot.is_confirmed)
+        .map((slot) => ({
+          endAt: slot.end_at,
+          startAt: slot.start_at,
+        })),
+    [reservationSlots],
+  );
+  const bufferRanges = useMemo<TimeRange[]>(
+    () =>
+      event.is_buffer_active
+        ? buildBufferTimeRanges(confirmedRanges, event.buffer_time_minutes)
+        : [],
+    [confirmedRanges, event.buffer_time_minutes, event.is_buffer_active],
+  );
+  const blockedRanges = useMemo<TimeRange[]>(
+    () => [
+      ...timeBlocks
         .filter((block) => block.type === "BLOCKED")
         .map((block) => ({
           endAt: block.end_at,
           startAt: block.start_at,
         })),
-    [timeBlocks],
+      ...bufferRanges,
+    ],
+    [bufferRanges, timeBlocks],
   );
   const occupiedRanges = useMemo<TimeRange[]>(
     () =>
@@ -113,6 +133,7 @@ export function GuestReservationShell({
           <TimeSelectionGrid
             allowWaitlist
             blockedRanges={blockedRanges}
+            bufferRanges={bufferRanges}
             dailyEndTime={event.daily_end_time}
             dailyStartTime={event.daily_start_time}
             dateEnd={event.date_end}
