@@ -2,6 +2,8 @@ import { normalizeEventCode } from "./event-code";
 import type { ParticipantDraft, TimeBlockType } from "@/types/domain";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PHONE_PATTERN = /^\+[1-9]\d{7,14}$/;
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -74,6 +76,36 @@ export function requireTime(value: unknown, fieldName: string) {
   }
 
   return textValue.length === 5 ? `${textValue}:00` : textValue;
+}
+
+export function requireEmail(value: unknown) {
+  const textValue = requireText(value, "email", 254).toLowerCase();
+
+  if (!EMAIL_PATTERN.test(textValue)) {
+    throw new Error("email must be a valid email address.");
+  }
+
+  return textValue;
+}
+
+export function requirePhone(value: unknown) {
+  const textValue = requireText(value, "phone", 20).replace(/[()\s-]/g, "");
+
+  if (!PHONE_PATTERN.test(textValue)) {
+    throw new Error("phone must be in E.164 format, like +821012345678.");
+  }
+
+  return textValue;
+}
+
+export function requireOtp(value: unknown) {
+  const textValue = requireText(value, "otp", 12).replace(/\s/g, "");
+
+  if (!/^\d{4,10}$/.test(textValue)) {
+    throw new Error("otp must be a numeric verification code.");
+  }
+
+  return textValue;
 }
 
 export function requireInteger(

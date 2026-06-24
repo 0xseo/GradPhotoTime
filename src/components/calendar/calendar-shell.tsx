@@ -1,5 +1,4 @@
-import Link from "next/link";
-import { Camera } from "lucide-react";
+import { AppHeader } from "@/components/layout/app-header";
 
 type CalendarShellProps = {
   children: React.ReactNode;
@@ -7,17 +6,16 @@ type CalendarShellProps = {
   title: string;
 };
 
-export function CalendarShell({ children, eyebrow, title }: CalendarShellProps) {
+export async function CalendarShell({
+  children,
+  eyebrow,
+  title,
+}: CalendarShellProps) {
   return (
     <main className="min-h-dvh bg-background">
       <header className="border-b border-border">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-5 py-4">
-          <Link href="/" className="flex items-center gap-2 text-primary">
-            <Camera className="size-5" aria-hidden="true" />
-            <span className="font-serif text-lg font-semibold">
-              Grad Photo Time
-            </span>
-          </Link>
+        <div className="mx-auto max-w-6xl px-5 py-2">
+          <AppHeader ctaHref="/host/events/new" ctaLabel="이벤트 생성" />
         </div>
       </header>
 

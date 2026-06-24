@@ -2,9 +2,9 @@
 
 ## Auth & Access
 
-- Restrict event creation to authenticated users only.
-- Web auth: support email-based sign up/sign in.
-- Web auth: support phone number verification sign up/sign in.
+- Restrict event creation to authenticated users only. (Implemented in Server Actions and UI gate.)
+- Web auth: support email-based sign up/sign in. (Implemented with Supabase OTP magic link.)
+- Web auth: support phone number verification sign up/sign in. (Implemented in UI/actions; requires Supabase SMS provider configuration.)
 - Mobile app auth: add Kakao SDK sign in for the Expo/WebView package.
 - Mobile app auth: add Google SDK sign in for the Expo/WebView package.
 - Keep guest reservation access code flows available for non-member participants.

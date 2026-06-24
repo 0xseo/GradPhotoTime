@@ -1,26 +1,12 @@
-import Link from "next/link";
 import { CalendarDays, Camera, Users } from "lucide-react";
 import { EventCodeEntry } from "@/components/guest/event-code-entry";
-import { buttonVariants } from "@/components/ui/button";
+import { AppHeader } from "@/components/layout/app-header";
 
-export default function Home() {
+export default async function Home() {
   return (
     <main className="min-h-dvh bg-background">
       <section className="mx-auto flex min-h-dvh w-full max-w-5xl flex-col px-5 py-6 sm:px-8">
-        <header className="flex items-center justify-between gap-3 py-2">
-          <Link href="/" className="flex items-center gap-2 text-primary">
-            <Camera className="size-6" aria-hidden="true" />
-            <span className="font-serif text-xl font-semibold">
-              Grad Photo Time
-            </span>
-          </Link>
-          <Link
-            href="/host/events/new"
-            className={buttonVariants({ variant: "outline", size: "sm" })}
-          >
-            이벤트 생성
-          </Link>
-        </header>
+        <AppHeader ctaHref="/host/events/new" ctaLabel="이벤트 생성" />
 
         <div className="grid flex-1 items-center gap-10 py-10 md:grid-cols-[1.1fr_0.9fr]">
           <div className="space-y-8">
