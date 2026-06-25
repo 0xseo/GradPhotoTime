@@ -23,8 +23,8 @@ export default function AuthPage() {
               촬영 일정을 열려면 먼저 로그인하세요.
             </h1>
             <p className="max-w-lg text-base leading-7 text-muted-foreground">
-              이메일로 받은 로그인 링크를 열면 바로 접속됩니다. 별도 비밀번호
-              설정 없이 호스트 기능을 사용할 수 있습니다.
+              가입 시 이메일 확인을 마친 뒤, 이후에는 이메일과 비밀번호로
+              바로 로그인합니다.
             </p>
           </div>
 
