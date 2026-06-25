@@ -28,6 +28,7 @@ export function getCandidateSlotBlockReason({
   bufferMinutesAfter,
   bufferMinutesBefore,
   candidate,
+  confirmedOrBufferRanges,
   confirmedRanges,
   timeBlocks,
 }: {
@@ -35,6 +36,7 @@ export function getCandidateSlotBlockReason({
   bufferMinutesAfter?: number;
   bufferMinutesBefore?: number;
   candidate: TimeRange;
+  confirmedOrBufferRanges?: TimeRange[];
   confirmedRanges: TimeRange[];
   timeBlocks: ReviewableTimeBlock[];
 }): CandidateSlotBlockReason | null {
@@ -57,23 +59,24 @@ export function getCandidateSlotBlockReason({
     return "OUTSIDE_AVAILABLE";
   }
 
-  const normalizedBufferMinutesBefore = Math.max(
-    bufferMinutesBefore ?? bufferMinutes ?? 0,
-    0,
-  );
-  const normalizedBufferMinutesAfter = Math.max(
-    bufferMinutesAfter ?? bufferMinutes ?? 0,
-    0,
-  );
-  const overlapsConfirmedOrBuffer = confirmedRanges.some((confirmedRange) =>
-    rangesOverlap(
-      candidate,
-      expandRangeByMinutes(
-        confirmedRange,
-        normalizedBufferMinutesBefore,
-        normalizedBufferMinutesAfter,
-      ),
-    ),
+  const rangesToCheck = confirmedOrBufferRanges ?? confirmedRanges.map((confirmedRange) => {
+    const normalizedBufferMinutesBefore = Math.max(
+      bufferMinutesBefore ?? bufferMinutes ?? 0,
+      0,
+    );
+    const normalizedBufferMinutesAfter = Math.max(
+      bufferMinutesAfter ?? bufferMinutes ?? 0,
+      0,
+    );
+
+    return expandRangeByMinutes(
+      confirmedRange,
+      normalizedBufferMinutesBefore,
+      normalizedBufferMinutesAfter,
+    );
+  });
+  const overlapsConfirmedOrBuffer = rangesToCheck.some((range) =>
+    rangesOverlap(candidate, range),
   );
 
   return overlapsConfirmedOrBuffer ? "CONFIRMED_OR_BUFFER" : null;

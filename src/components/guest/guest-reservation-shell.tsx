@@ -4,25 +4,29 @@ import Link from "next/link";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Check, Copy, Loader2, ListChecks, Trash2, Users } from "lucide-react";
 import { createReservation } from "@/app/actions/reservations";
-import type { PublicEvent } from "@/app/actions/events";
+import type { EventBufferOverride, PublicEvent } from "@/app/actions/events";
 import type { EventScheduleSlot } from "@/app/actions/time-blocks";
 import { TimeSelectionGrid } from "@/components/calendar/time-selection-grid";
 import { Button } from "@/components/ui/button";
 import { CopyButton } from "@/components/ui/copy-button";
 import { Input } from "@/components/ui/input";
 import { formatTimeRange } from "@/lib/time/event-days";
-import { buildBufferTimeRanges } from "@/lib/time/ranges";
+import { buildEffectiveBufferTimeRanges } from "@/lib/time/ranges";
 import { useSelectionStore } from "@/store/use-selection-store";
 import type { Tables } from "@/lib/supabase/database.types";
 import type { TimeRange } from "@/types/domain";
 
 type GuestReservationShellProps = {
+  activeDates: string[];
+  bufferOverrides: EventBufferOverride[];
   event: PublicEvent;
   reservationSlots: EventScheduleSlot[];
   timeBlocks: Tables<"time_blocks">[];
 };
 
 export function GuestReservationShell({
+  activeDates,
+  bufferOverrides,
   event,
   reservationSlots,
   timeBlocks,
@@ -32,30 +36,29 @@ export function GuestReservationShell({
   const [isPending, setIsPending] = useState(false);
   const clearSelection = useSelectionStore((state) => state.clearSelection);
   const selectedRanges = useSelectionStore((state) => state.selectedRanges);
-  const confirmedRanges = useMemo<TimeRange[]>(
-    () =>
-      reservationSlots
-        .filter((slot) => slot.is_confirmed)
-        .map((slot) => ({
-          endAt: slot.end_at,
-          startAt: slot.start_at,
-        })),
-    [reservationSlots],
-  );
   const bufferRanges = useMemo<TimeRange[]>(
     () =>
-      event.is_buffer_active
-        ? buildBufferTimeRanges(confirmedRanges, event.buffer_time_minutes, {
-            afterActive: event.is_buffer_after_active,
-            beforeActive: event.is_buffer_before_active,
-          })
-        : [],
+      buildEffectiveBufferTimeRanges({
+        afterActive: event.is_buffer_after_active,
+        beforeActive: event.is_buffer_before_active,
+        bufferMinutes: event.buffer_time_minutes,
+        isBufferActive: event.is_buffer_active,
+        overrides: bufferOverrides,
+        ranges: reservationSlots
+          .filter((slot) => slot.is_confirmed)
+          .map((slot) => ({
+            endAt: slot.end_at,
+            id: slot.id,
+            startAt: slot.start_at,
+          })),
+      }),
     [
-      confirmedRanges,
+      bufferOverrides,
       event.buffer_time_minutes,
       event.is_buffer_active,
       event.is_buffer_after_active,
       event.is_buffer_before_active,
+      reservationSlots,
     ],
   );
   const blockedRanges = useMemo<TimeRange[]>(
@@ -142,6 +145,7 @@ export function GuestReservationShell({
         <div className="mt-4">
           <TimeSelectionGrid
             allowWaitlist
+            activeDates={activeDates}
             blockedRanges={blockedRanges}
             bufferRanges={bufferRanges}
             dailyEndTime={event.daily_end_time}

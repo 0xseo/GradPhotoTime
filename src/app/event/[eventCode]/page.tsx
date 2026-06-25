@@ -2,7 +2,11 @@ import { redirect } from "next/navigation";
 import { CalendarShell } from "@/components/calendar/calendar-shell";
 import { ReservationCodeEntry } from "@/components/guest/event-code-entry";
 import { GuestReservationShell } from "@/components/guest/guest-reservation-shell";
-import { verifyEventCode } from "@/app/actions/events";
+import {
+  listEventActiveDates,
+  listEventBufferOverrides,
+  verifyEventCode,
+} from "@/app/actions/events";
 import { listTimeBlocks } from "@/app/actions/time-blocks";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -48,6 +52,12 @@ export default async function EventPage({ params }: EventPageProps) {
   }
 
   const scheduleResult = await listTimeBlocks({ eventCode: event.event_code });
+  const activeDatesResult = await listEventActiveDates({
+    eventCode: event.event_code,
+  });
+  const bufferOverridesResult = await listEventBufferOverrides({
+    eventCode: event.event_code,
+  });
 
   return (
     <CalendarShell eyebrow="Guest" title={event.title}>
@@ -59,15 +69,23 @@ export default async function EventPage({ params }: EventPageProps) {
       <div className="mb-5 max-w-xl">
         <ReservationCodeEntry />
       </div>
-      {scheduleResult.ok ? (
+      {scheduleResult.ok && activeDatesResult.ok && bufferOverridesResult.ok ? (
         <GuestReservationShell
+          activeDates={activeDatesResult.data.activeDates}
+          bufferOverrides={bufferOverridesResult.data.bufferOverrides}
           event={event}
           reservationSlots={scheduleResult.data.reservationSlots}
           timeBlocks={scheduleResult.data.timeBlocks}
         />
       ) : (
         <p className="rounded-md border border-danger/30 bg-red-50 p-4 text-sm text-danger">
-          {scheduleResult.error}
+          {!scheduleResult.ok
+            ? scheduleResult.error
+            : !activeDatesResult.ok
+              ? activeDatesResult.error
+              : !bufferOverridesResult.ok
+                ? bufferOverridesResult.error
+              : "일정 정보를 불러오지 못했습니다."}
         </p>
       )}
     </CalendarShell>

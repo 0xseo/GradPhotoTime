@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  applyAvailabilityToggleSelection,
   applySelectedTimeRange,
   applyTimeBlockSelection,
 } from "../src/lib/time/range-set.ts";
@@ -111,6 +112,60 @@ describe("time block selection updates", () => {
           ...range(10, 0, 11, 0),
           note: null,
           type: "BLOCKED",
+        },
+      ],
+    );
+  });
+
+  it("splits available blocks when dragging from an available range", () => {
+    assert.deepEqual(
+      applyAvailabilityToggleSelection(
+        [
+          {
+            ...range(9, 0, 12, 0),
+            note: null,
+            type: "AVAILABLE",
+          },
+        ],
+        [range(10, 0, 11, 0)],
+      ),
+      [
+        {
+          ...range(9, 0, 10, 0),
+          note: null,
+          type: "AVAILABLE",
+        },
+        {
+          ...range(11, 0, 12, 0),
+          note: null,
+          type: "AVAILABLE",
+        },
+      ],
+    );
+  });
+
+  it("merges available blocks when dragging from unavailable time", () => {
+    assert.deepEqual(
+      applyAvailabilityToggleSelection(
+        [
+          {
+            ...range(9, 0, 10, 0),
+            note: null,
+            type: "AVAILABLE",
+          },
+          {
+            ...range(11, 0, 12, 0),
+            note: null,
+            type: "AVAILABLE",
+          },
+        ],
+        [range(10, 0, 11, 0)],
+      ),
+      [
+        {
+          ...range(9, 0, 12, 0),
+          note: null,
+          type: "AVAILABLE",
         },
       ],
     );

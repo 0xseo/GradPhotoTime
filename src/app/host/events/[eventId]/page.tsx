@@ -1,6 +1,9 @@
 import { CalendarShell } from "@/components/calendar/calendar-shell";
 import { HostDashboardShell } from "@/components/host/host-dashboard-shell";
-import { listEventBufferOverrides } from "@/app/actions/events";
+import {
+  listEventActiveDates,
+  listEventBufferOverrides,
+} from "@/app/actions/events";
 import { listEventReservations } from "@/app/actions/reservations";
 import { listTimeBlocks } from "@/app/actions/time-blocks";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
@@ -41,14 +44,22 @@ export default async function HostEventPage({ params }: HostEventPageProps) {
   const scheduleResult = await listTimeBlocks({ eventId });
   const reservationsResult = await listEventReservations({ eventId });
   const bufferOverridesResult = await listEventBufferOverrides({ eventId });
+  const activeDatesResult = await listEventActiveDates({ eventId });
 
-  if (!scheduleResult.ok || !reservationsResult.ok || !bufferOverridesResult.ok) {
+  if (
+    !scheduleResult.ok ||
+    !reservationsResult.ok ||
+    !bufferOverridesResult.ok ||
+    !activeDatesResult.ok
+  ) {
     const errorMessage = !scheduleResult.ok
       ? scheduleResult.error
       : !reservationsResult.ok
         ? reservationsResult.error
         : !bufferOverridesResult.ok
           ? bufferOverridesResult.error
+          : !activeDatesResult.ok
+            ? activeDatesResult.error
         : "일정 정보를 불러오지 못했습니다.";
 
     return (
@@ -73,6 +84,7 @@ export default async function HostEventPage({ params }: HostEventPageProps) {
         </p>
       ) : null}
       <HostDashboardShell
+        activeDates={activeDatesResult.data.activeDates}
         bufferOverrides={bufferOverridesResult.data.bufferOverrides}
         event={event}
         reservations={reservationsResult.data.reservations}

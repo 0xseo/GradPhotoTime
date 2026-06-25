@@ -7,8 +7,12 @@ import {
   getTimestampAtGridOffset,
   type TimeGridConfig,
 } from "@/lib/time/ranges";
+import { getDayGridRange } from "@/lib/time/event-days";
 import { isTimestampInRanges } from "@/lib/time/range-set";
-import { useSelectionStore } from "@/store/use-selection-store";
+import {
+  useSelectionStore,
+  type DraftTimeRange,
+} from "@/store/use-selection-store";
 import type {
   TimeRange,
   TimeRangeAvailability,
@@ -20,6 +24,11 @@ type SelectionBehavior = "append" | "replace";
 type UseTimeSelectionOptions = TimeGridConfig & {
   allowWaitlist?: boolean;
   blockedRanges?: TimeRange[];
+  calendarGridRef?: RefObject<HTMLElement | null>;
+  dailyEndTime?: string;
+  dailyStartTime?: string;
+  dates?: string[];
+  dayIndex?: number;
   gridRef: RefObject<HTMLElement | null>;
   mode?: TimeSelectionMode;
   occupiedRanges?: TimeRange[];
@@ -29,6 +38,11 @@ type UseTimeSelectionOptions = TimeGridConfig & {
 export function useTimeSelection({
   allowWaitlist = false,
   blockedRanges = [],
+  calendarGridRef,
+  dailyEndTime,
+  dailyStartTime,
+  dates,
+  dayIndex,
   gridEndAt,
   gridRef,
   gridStartAt,
@@ -45,10 +59,12 @@ export function useTimeSelection({
   const commitDraftRange = useSelectionStore((state) => state.commitDraftRange);
   const draftAvailability = useSelectionStore((state) => state.draftAvailability);
   const draftRange = useSelectionStore((state) => state.draftRange);
+  const draftRanges = useSelectionStore((state) => state.draftRanges);
   const isDragging = useSelectionStore((state) => state.isDragging);
   const selectedRanges = useSelectionStore((state) => state.selectedRanges);
   const setMode = useSelectionStore((state) => state.setMode);
   const updateDraftRange = useSelectionStore((state) => state.updateDraftRange);
+  const updateDraftRanges = useSelectionStore((state) => state.updateDraftRanges);
 
   const config = useMemo<TimeGridConfig>(
     () => ({
@@ -89,6 +105,80 @@ export function useTimeSelection({
     [allowWaitlist, blockedRanges, config, gridRef, occupiedRanges],
   );
 
+  const getDraftRangesFromPointer = useCallback(
+    (
+      clientX: number,
+      clientY: number,
+      initialTimestamp: number,
+    ): DraftTimeRange[] | null => {
+      const draft = getDraftFromPointer(clientY, initialTimestamp);
+
+      if (!draft) {
+        return null;
+      }
+
+      if (
+        !calendarGridRef?.current ||
+        !dailyEndTime ||
+        !dailyStartTime ||
+        !dates?.length ||
+        dayIndex === undefined
+      ) {
+        return [{ ...draft.range, availability: draft.availability }];
+      }
+
+      const currentDayIndex = getDayIndexAtClientX(
+        clientX,
+        calendarGridRef.current,
+        dates.length,
+      );
+      const [startDayIndex, endDayIndex] =
+        currentDayIndex < dayIndex
+          ? [currentDayIndex, dayIndex]
+          : [dayIndex, currentDayIndex];
+      const baseGridStart = new Date(gridStartAt).getTime();
+      const startOffset =
+        new Date(draft.range.startAt).getTime() - baseGridStart;
+      const endOffset = new Date(draft.range.endAt).getTime() - baseGridStart;
+
+      return dates
+        .slice(startDayIndex, endDayIndex + 1)
+        .map<DraftTimeRange>((date) => {
+          const { gridStartAt: dayGridStartAt } = getDayGridRange(
+            date,
+            dailyStartTime,
+            dailyEndTime,
+          );
+          const dayGridStart = new Date(dayGridStartAt).getTime();
+          const range = {
+            endAt: new Date(dayGridStart + endOffset).toISOString(),
+            startAt: new Date(dayGridStart + startOffset).toISOString(),
+          };
+
+          return {
+            ...range,
+            availability: getRangeAvailability(range, {
+              allowWaitlist,
+              blockedRanges,
+              occupiedRanges,
+            }),
+          };
+        });
+    },
+    [
+      allowWaitlist,
+      blockedRanges,
+      calendarGridRef,
+      dailyEndTime,
+      dailyStartTime,
+      dates,
+      dayIndex,
+      getDraftFromPointer,
+      gridStartAt,
+      occupiedRanges,
+    ],
+  );
+
   const handlePointerDown = useCallback(
     (event: PointerEvent<HTMLElement>) => {
       if (event.pointerType === "mouse" && event.button !== 0) {
@@ -106,7 +196,12 @@ export function useTimeSelection({
         gridElement.getBoundingClientRect(),
         config,
       );
-      const draft = getDraftFromPointer(event.clientY, timestamp);
+      const draftRangesFromPointer = getDraftRangesFromPointer(
+        event.clientX,
+        event.clientY,
+        timestamp,
+      );
+      const draft = draftRangesFromPointer?.[0];
 
       if (!draft) {
         return;
@@ -122,7 +217,11 @@ export function useTimeSelection({
       beginSelection({
         anchorTimestamp: timestamp,
         draftAvailability: draft.availability,
-        draftRange: draft.range,
+        draftRange: {
+          endAt: draft.endAt,
+          startAt: draft.startAt,
+        },
+        draftRanges: draftRangesFromPointer,
         operation: isTimestampInRanges(timestamp, selectedRanges)
           ? "remove"
           : "add",
@@ -132,7 +231,7 @@ export function useTimeSelection({
     [
       beginSelection,
       config,
-      getDraftFromPointer,
+      getDraftRangesFromPointer,
       gridRef,
       mode,
       selectedRanges,
@@ -150,21 +249,36 @@ export function useTimeSelection({
         return;
       }
 
-      const draft = getDraftFromPointer(event.clientY, anchorTimestamp);
+      const draftRangesFromPointer = getDraftRangesFromPointer(
+        event.clientX,
+        event.clientY,
+        anchorTimestamp,
+      );
 
-      if (!draft) {
+      if (!draftRangesFromPointer) {
         return;
       }
 
       event.preventDefault();
-      updateDraftRange(draft.range, draft.availability);
+      if (draftRangesFromPointer.length === 1) {
+        updateDraftRange(
+          {
+            endAt: draftRangesFromPointer[0].endAt,
+            startAt: draftRangesFromPointer[0].startAt,
+          },
+          draftRangesFromPointer[0].availability,
+        );
+      } else {
+        updateDraftRanges(draftRangesFromPointer);
+      }
     },
     [
       activePointerId,
       anchorTimestamp,
-      getDraftFromPointer,
+      getDraftRangesFromPointer,
       isDragging,
       updateDraftRange,
+      updateDraftRanges,
     ],
   );
 
@@ -202,6 +316,7 @@ export function useTimeSelection({
   return {
     draftAvailability: draftAvailability ?? ("available" as TimeRangeAvailability),
     draftRange,
+    draftRanges,
     gridProps: {
       onPointerCancel: handlePointerCancel,
       onPointerDown: handlePointerDown,
@@ -216,4 +331,34 @@ export function useTimeSelection({
     isDragging,
     selectedRanges,
   };
+}
+
+function getDayIndexAtClientX(
+  clientX: number,
+  calendarGridElement: HTMLElement,
+  dayCount: number,
+) {
+  const dayElements = Array.from(
+    calendarGridElement.querySelectorAll<HTMLElement>("[data-day-grid-index]"),
+  );
+
+  if (dayElements.length === 0) {
+    return 0;
+  }
+
+  for (const dayElement of dayElements) {
+    const bounds = dayElement.getBoundingClientRect();
+
+    if (bounds.left <= clientX && clientX <= bounds.right) {
+      return Number(dayElement.dataset.dayGridIndex ?? 0);
+    }
+  }
+
+  const firstBounds = dayElements[0].getBoundingClientRect();
+
+  if (clientX < firstBounds.left) {
+    return 0;
+  }
+
+  return Math.min(dayElements.length - 1, dayCount - 1);
 }

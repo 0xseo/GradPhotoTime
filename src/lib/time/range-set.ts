@@ -82,6 +82,41 @@ export function applyTimeBlockSelection(
   return mergeTimeBlockRanges([...retainedBlocks, ...addedBlocks]);
 }
 
+export function applyAvailabilityToggleSelection(
+  existingBlocks: TimeBlockRangeDraft[],
+  selectedRanges: TimeRange[],
+) {
+  return selectedRanges.reduce<TimeBlockRangeDraft[]>(
+    (currentBlocks, selectedRange) => {
+      const startsInAvailable = isTimestampInRanges(
+        new Date(selectedRange.startAt).getTime(),
+        currentBlocks.filter((block) => block.type === "AVAILABLE"),
+      );
+      const retainedBlocks = currentBlocks.flatMap((block) =>
+        subtractTimeRange(block, selectedRange).map((piece) => ({
+          ...piece,
+          note: block.note ?? null,
+          type: block.type,
+        })),
+      );
+
+      if (startsInAvailable) {
+        return mergeTimeBlockRanges(retainedBlocks);
+      }
+
+      return mergeTimeBlockRanges([
+        ...retainedBlocks,
+        {
+          ...selectedRange,
+          note: null,
+          type: "AVAILABLE",
+        },
+      ]);
+    },
+    existingBlocks,
+  );
+}
+
 export function subtractTimeRanges(range: TimeRange, removals: TimeRange[]) {
   return removals.reduce<TimeRange[]>(
     (pieces, removal) =>

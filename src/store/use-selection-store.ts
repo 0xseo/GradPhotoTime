@@ -12,10 +12,15 @@ import type {
 type CommitBehavior = "append" | "replace";
 type SelectionOperation = "add" | "remove";
 
+export type DraftTimeRange = TimeRange & {
+  availability: TimeRangeAvailability;
+};
+
 type BeginSelectionInput = {
   anchorTimestamp: number;
   draftAvailability: TimeRangeAvailability;
   draftRange: TimeRange;
+  draftRanges?: DraftTimeRange[];
   operation: SelectionOperation;
   pointerId: number;
 };
@@ -26,6 +31,7 @@ type SelectionState = {
   draftAvailability: TimeRangeAvailability | null;
   draftOperation: SelectionOperation;
   draftRange: TimeRange | null;
+  draftRanges: DraftTimeRange[];
   isDragging: boolean;
   mode: TimeSelectionMode;
   selectedRanges: SelectedTimeRange[];
@@ -40,6 +46,7 @@ type SelectionState = {
     range: TimeRange,
     availability: TimeRangeAvailability,
   ) => void;
+  updateDraftRanges: (ranges: DraftTimeRange[]) => void;
 };
 
 export const useSelectionStore = create<SelectionState>((set) => ({
@@ -48,6 +55,7 @@ export const useSelectionStore = create<SelectionState>((set) => ({
   draftAvailability: null,
   draftOperation: "add",
   draftRange: null,
+  draftRanges: [],
   isDragging: false,
   mode: "guest-reservation",
   selectedRanges: [],
@@ -55,6 +63,7 @@ export const useSelectionStore = create<SelectionState>((set) => ({
     anchorTimestamp,
     draftAvailability,
     draftRange,
+    draftRanges,
     operation,
     pointerId,
   }) =>
@@ -64,6 +73,7 @@ export const useSelectionStore = create<SelectionState>((set) => ({
       draftAvailability,
       draftOperation: operation,
       draftRange,
+      draftRanges: draftRanges ?? [{ ...draftRange, availability: draftAvailability }],
       isDragging: true,
     }),
   cancelSelection: () =>
@@ -73,6 +83,7 @@ export const useSelectionStore = create<SelectionState>((set) => ({
       draftAvailability: null,
       draftOperation: "add",
       draftRange: null,
+      draftRanges: [],
       isDragging: false,
     }),
   clearSelection: () =>
@@ -82,35 +93,48 @@ export const useSelectionStore = create<SelectionState>((set) => ({
       draftAvailability: null,
       draftOperation: "add",
       draftRange: null,
+      draftRanges: [],
       isDragging: false,
       selectedRanges: [],
     }),
   commitDraftRange: (behavior = "append") =>
     set((state) => {
-      if (!state.draftRange || state.draftAvailability === "blocked") {
+      const draftRanges =
+        state.draftRanges.length > 0
+          ? state.draftRanges
+          : state.draftRange && state.draftAvailability
+            ? [{ ...state.draftRange, availability: state.draftAvailability }]
+            : [];
+      const committableRanges = draftRanges.filter(
+        (range) => range.availability !== "blocked",
+      );
+
+      if (committableRanges.length === 0) {
         return {
           activePointerId: null,
           anchorTimestamp: null,
           draftAvailability: null,
           draftOperation: "add",
           draftRange: null,
+          draftRanges: [],
           isDragging: false,
         };
       }
 
       const nextRanges =
         behavior === "replace"
-          ? [
-              createSelectedTimeRange(
-                state.draftRange,
-                state.draftAvailability ?? "available",
-              ),
-            ]
-          : applySelectedTimeRange(
+          ? committableRanges.map((range) =>
+              createSelectedTimeRange(range, range.availability),
+            )
+          : committableRanges.reduce(
+              (selectedRanges, range) =>
+                applySelectedTimeRange(
+                  selectedRanges,
+                  range,
+                  range.availability,
+                  state.draftOperation,
+                ),
               state.selectedRanges,
-              state.draftRange,
-              state.draftAvailability ?? "available",
-              state.draftOperation,
             );
 
       return {
@@ -119,6 +143,7 @@ export const useSelectionStore = create<SelectionState>((set) => ({
         draftAvailability: null,
         draftOperation: "add",
         draftRange: null,
+        draftRanges: [],
         isDragging: false,
         selectedRanges: nextRanges,
       };
@@ -130,7 +155,22 @@ export const useSelectionStore = create<SelectionState>((set) => ({
   setMode: (mode) => set({ mode }),
   setSelectedRanges: (selectedRanges) => set({ selectedRanges }),
   updateDraftRange: (draftRange, draftAvailability) =>
-    set({ draftAvailability, draftRange }),
+    set({
+      draftAvailability,
+      draftRange,
+      draftRanges: [{ ...draftRange, availability: draftAvailability }],
+    }),
+  updateDraftRanges: (draftRanges) =>
+    set({
+      draftAvailability: draftRanges[0]?.availability ?? null,
+      draftRange: draftRanges[0]
+        ? {
+            endAt: draftRanges[0].endAt,
+            startAt: draftRanges[0].startAt,
+          }
+        : null,
+      draftRanges,
+    }),
 }));
 
 function createSelectedTimeRange(

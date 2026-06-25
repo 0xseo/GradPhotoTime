@@ -19,6 +19,7 @@ import type { TimeRange } from "@/types/domain";
 
 export type EventBufferOverride = Tables<"event_buffer_overrides">;
 export type EventBufferSide = "BEFORE" | "AFTER";
+export type EventActiveDate = Tables<"event_active_dates">;
 
 export type PublicEvent = Pick<
   Tables<"events">,
@@ -114,6 +115,20 @@ export async function createEvent(
       }
     }
 
+    const { error: activeDatesError } = await admin
+      .from("event_active_dates")
+      .insert(
+        buildDateList(payload.dateStart, payload.dateEnd).map((activeDate) => ({
+          active_date: activeDate,
+          event_id: data.id,
+        })),
+      );
+
+    if (activeDatesError) {
+      await admin.from("events").delete().eq("id", data.id);
+      return actionError(activeDatesError.message);
+    }
+
     revalidatePath("/");
 
     return actionOk({ event: mapPublicEvent(data) });
@@ -193,6 +208,17 @@ export async function updateEventBufferSettings(
       false,
     );
     const admin = createSupabaseAdminClient();
+    const { data: currentEvent, error: currentEventError } = await admin
+      .from("events")
+      .select("is_buffer_before_active,is_buffer_after_active")
+      .eq("id", eventId)
+      .eq("host_id", user.id)
+      .single();
+
+    if (currentEventError || !currentEvent) {
+      return actionError("버퍼 설정을 저장할 수 없습니다.");
+    }
+
     const { data, error } = await admin
       .from("events")
       .update({
@@ -212,6 +238,41 @@ export async function updateEventBufferSettings(
       return actionError("버퍼 설정을 저장할 수 없습니다.");
     }
 
+    const resetSides: EventBufferSide[] = [];
+
+    if (currentEvent.is_buffer_before_active !== isBufferBeforeActive) {
+      resetSides.push("BEFORE");
+    }
+
+    if (currentEvent.is_buffer_after_active !== isBufferAfterActive) {
+      resetSides.push("AFTER");
+    }
+
+    if (resetSides.length > 0) {
+      const { error: resetError } = await admin
+        .from("event_buffer_overrides")
+        .delete()
+        .eq("event_id", eventId)
+        .in("side", resetSides);
+
+      if (resetError) {
+        return actionError(resetError.message);
+      }
+    } else {
+      const { error: resetCustomRangesError } = await admin
+        .from("event_buffer_overrides")
+        .update({
+          custom_end_at: null,
+          custom_start_at: null,
+        })
+        .eq("event_id", eventId)
+        .eq("is_active", true);
+
+      if (resetCustomRangesError) {
+        return actionError(resetCustomRangesError.message);
+      }
+    }
+
     revalidatePath(`/host/events/${data.id}`);
     revalidatePath(`/event/${data.event_code}`);
 
@@ -222,8 +283,7 @@ export async function updateEventBufferSettings(
 }
 
 export type UpdateEventDateRangeInput = {
-  dateEnd: string;
-  dateStart: string;
+  activeDates: string[];
   eventId: string;
 };
 
@@ -236,11 +296,12 @@ export async function updateEventDateRange(
 ): Promise<ActionResult<UpdateEventDateRangeData>> {
   try {
     const { admin, event } = await getEditableEventContext(input.eventId);
-    const dateStart = requireDate(input.dateStart, "dateStart");
-    const dateEnd = requireDate(input.dateEnd, "dateEnd");
+    const activeDates = parseActiveDates(input.activeDates);
+    const dateStart = activeDates[0];
+    const dateEnd = activeDates.at(-1);
 
-    if (new Date(dateStart).getTime() > new Date(dateEnd).getTime()) {
-      return actionError("시작일은 종료일보다 늦을 수 없습니다.");
+    if (!dateEnd) {
+      return actionError("활성 날짜를 하나 이상 선택해 주세요.");
     }
 
     const { data, error } = await admin
@@ -259,6 +320,28 @@ export async function updateEventDateRange(
       return actionError("날짜 범위를 저장할 수 없습니다.");
     }
 
+    const { error: deleteError } = await admin
+      .from("event_active_dates")
+      .delete()
+      .eq("event_id", event.id);
+
+    if (deleteError) {
+      return actionError(deleteError.message);
+    }
+
+    const { error: insertError } = await admin
+      .from("event_active_dates")
+      .insert(
+        activeDates.map((activeDate) => ({
+          active_date: activeDate,
+          event_id: event.id,
+        })),
+      );
+
+    if (insertError) {
+      return actionError(insertError.message);
+    }
+
     revalidatePath(`/host/events/${data.id}`);
     revalidatePath(`/event/${data.event_code}`);
 
@@ -268,9 +351,15 @@ export async function updateEventDateRange(
   }
 }
 
-export type ListEventBufferOverridesInput = {
-  eventId: string;
-};
+export type ListEventBufferOverridesInput =
+  | {
+      eventCode: string;
+      eventId?: never;
+    }
+  | {
+      eventCode?: never;
+      eventId: string;
+    };
 
 export type ListEventBufferOverridesData = {
   bufferOverrides: EventBufferOverride[];
@@ -280,11 +369,19 @@ export async function listEventBufferOverrides(
   input: ListEventBufferOverridesInput,
 ): Promise<ActionResult<ListEventBufferOverridesData>> {
   try {
-    const { admin, event } = await getEditableEventContext(input.eventId);
+    const admin = createSupabaseAdminClient();
+    const eventId = input.eventCode
+      ? await getEventIdByCode(input.eventCode)
+      : requireUuid(input.eventId, "eventId");
+
+    if (!input.eventCode) {
+      await assertEditableEvent(eventId);
+    }
+
     const { data, error } = await admin
       .from("event_buffer_overrides")
       .select("*")
-      .eq("event_id", event.id)
+      .eq("event_id", eventId)
       .order("created_at", { ascending: true });
 
     if (error) {
@@ -297,7 +394,54 @@ export async function listEventBufferOverrides(
   }
 }
 
+export type ListEventActiveDatesInput =
+  | {
+      eventCode: string;
+      eventId?: never;
+    }
+  | {
+      eventCode?: never;
+      eventId: string;
+    };
+
+export type ListEventActiveDatesData = {
+  activeDates: string[];
+};
+
+export async function listEventActiveDates(
+  input: ListEventActiveDatesInput,
+): Promise<ActionResult<ListEventActiveDatesData>> {
+  try {
+    const admin = createSupabaseAdminClient();
+    const eventId = input.eventCode
+      ? await getEventIdByCode(input.eventCode)
+      : requireUuid(input.eventId, "eventId");
+
+    if (!input.eventCode) {
+      await assertEditableEvent(eventId);
+    }
+
+    const { data, error } = await admin
+      .from("event_active_dates")
+      .select("active_date")
+      .eq("event_id", eventId)
+      .order("active_date", { ascending: true });
+
+    if (error) {
+      return actionError(error.message);
+    }
+
+    return actionOk({
+      activeDates: data?.map((row) => row.active_date) ?? [],
+    });
+  } catch (error) {
+    return actionError(getErrorMessage(error));
+  }
+}
+
 export type ToggleEventBufferOverrideInput = {
+  customEndAt?: string | null;
+  customStartAt?: string | null;
   eventId: string;
   isActive: boolean;
   reservationSlotId: string;
@@ -319,12 +463,17 @@ export async function toggleEventBufferOverride(
     );
     const side = requireBufferSide(input.side);
     const isActive = optionalBoolean(input.isActive, true);
+    const customRange = parseOptionalBufferRange(
+      input.customStartAt,
+      input.customEndAt,
+    );
 
     const { data: slot, error: slotError } = await admin
       .from("reservation_slots")
-      .select("id,event_id")
+      .select("id,event_id,is_confirmed")
       .eq("id", reservationSlotId)
       .eq("event_id", event.id)
+      .eq("is_confirmed", true)
       .single();
 
     if (slotError || !slot) {
@@ -335,6 +484,8 @@ export async function toggleEventBufferOverride(
       .from("event_buffer_overrides")
       .upsert(
         {
+          custom_end_at: customRange?.endAt ?? null,
+          custom_start_at: customRange?.startAt ?? null,
           event_id: event.id,
           is_active: isActive,
           reservation_slot_id: reservationSlotId,
@@ -425,6 +576,87 @@ function mapPublicEvent(event: PublicEvent): PublicEvent {
     timezone: event.timezone,
     title: event.title,
   };
+}
+
+function parseActiveDates(value: unknown) {
+  if (!Array.isArray(value)) {
+    throw new Error("activeDates must be an array.");
+  }
+
+  const activeDates = [
+    ...new Set(
+      value.map((date, index) => requireDate(date, `activeDates[${index}]`)),
+    ),
+  ].sort();
+
+  if (activeDates.length === 0 || activeDates.length > 120) {
+    throw new Error("activeDates must include 1-120 dates.");
+  }
+
+  return activeDates;
+}
+
+function parseOptionalBufferRange(
+  customStartAt: unknown,
+  customEndAt: unknown,
+) {
+  if (!customStartAt && !customEndAt) {
+    return null;
+  }
+
+  if (typeof customStartAt !== "string" || typeof customEndAt !== "string") {
+    throw new Error("custom buffer range requires start and end.");
+  }
+
+  const startAt = new Date(customStartAt).toISOString();
+  const endAt = new Date(customEndAt).toISOString();
+
+  if (new Date(startAt).getTime() >= new Date(endAt).getTime()) {
+    throw new Error("custom buffer start must be earlier than end.");
+  }
+
+  return { endAt, startAt };
+}
+
+function buildDateList(dateStart: string, dateEnd: string) {
+  const dates: string[] = [];
+  const current = new Date(`${dateStart}T00:00:00`);
+  const end = new Date(`${dateEnd}T00:00:00`);
+
+  while (current.getTime() <= end.getTime()) {
+    dates.push(toDateOnly(current));
+    current.setDate(current.getDate() + 1);
+  }
+
+  return dates;
+}
+
+function toDateOnly(date: Date) {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+async function getEventIdByCode(eventCodeInput: string) {
+  const eventCode = requireEventCode(eventCodeInput);
+  const admin = createSupabaseAdminClient();
+  const { data, error } = await admin
+    .from("events")
+    .select("id")
+    .eq("event_code", eventCode)
+    .single();
+
+  if (error || !data) {
+    throw new Error("존재하지 않는 이벤트 코드입니다.");
+  }
+
+  return data.id;
+}
+
+async function assertEditableEvent(eventId: string) {
+  await getEditableEventContext(eventId);
 }
 
 async function getEditableEventContext(eventIdInput: string) {

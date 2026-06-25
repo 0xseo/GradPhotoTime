@@ -121,6 +121,14 @@ export type BufferRangeSource = TimeRange & {
   id: string;
 };
 
+export type BufferOverrideRange = {
+  custom_end_at?: string | null;
+  custom_start_at?: string | null;
+  is_active: boolean;
+  reservation_slot_id: string;
+  side: BufferRangeSide | string;
+};
+
 export function buildBufferTimeRangeItems(
   ranges: BufferRangeSource[],
   bufferMinutes: number,
@@ -171,6 +179,54 @@ export function getBufferOverrideKey(
   side: BufferRangeSide,
 ) {
   return `${reservationSlotId}:${side}`;
+}
+
+export function buildEffectiveBufferTimeRanges({
+  afterActive,
+  beforeActive,
+  bufferMinutes,
+  isBufferActive,
+  overrides,
+  ranges,
+}: {
+  afterActive: boolean;
+  beforeActive: boolean;
+  bufferMinutes: number;
+  isBufferActive: boolean;
+  overrides: BufferOverrideRange[];
+  ranges: BufferRangeSource[];
+}) {
+  const overrideByKey = new Map(
+    overrides.map((override) => [
+      getBufferOverrideKey(
+        override.reservation_slot_id,
+        override.side as BufferRangeSide,
+      ),
+      override,
+    ]),
+  );
+
+  return buildBufferTimeRangeItems(ranges, bufferMinutes, {
+    afterActive: true,
+    beforeActive: true,
+  }).flatMap<TimeRange>((bufferItem) => {
+    const override = overrideByKey.get(bufferItem.id);
+    const globallyActive =
+      isBufferActive &&
+      (bufferItem.side === "BEFORE" ? beforeActive : afterActive);
+    const isActive = override ? override.is_active : globallyActive;
+
+    if (!isActive) {
+      return [];
+    }
+
+    return [
+      {
+        endAt: override?.custom_end_at ?? bufferItem.endAt,
+        startAt: override?.custom_start_at ?? bufferItem.startAt,
+      },
+    ];
+  });
 }
 
 export function clampRangeToGrid(range: TimeRange, config: TimeGridConfig) {

@@ -14,14 +14,19 @@ import {
   type CandidateSlotBlockReason,
 } from "@/lib/reservations/rules";
 import {
+  buildBufferTimeRangeItems,
+  getBufferOverrideKey,
+} from "@/lib/time/ranges";
+import {
   optionalText,
   requireInteger,
   requireParticipants,
   requireReservationAccessCode,
+  requireTimeRange,
   requireTimeRanges,
   requireUuid,
 } from "@/lib/validators/action-inputs";
-import type { PublicEvent } from "@/app/actions/events";
+import type { EventBufferOverride, PublicEvent } from "@/app/actions/events";
 import type { EventScheduleSlot } from "@/app/actions/time-blocks";
 import type { ParticipantDraft, ReservationStatus, TimeRange } from "@/types/domain";
 
@@ -67,6 +72,8 @@ export type CreateReservationData = {
 export type HostReservationGroup = PublicReservationGroup;
 
 export type ReservationManagementView = {
+  activeDates: string[];
+  bufferOverrides: EventBufferOverride[];
   event: PublicEvent;
   passwordRequired: boolean;
   reservation: PublicReservationGroup;
@@ -90,15 +97,25 @@ export async function getReservationManagementView(
     const supabase = createSupabaseAdminClient();
     const currentUserId = await getCurrentUserId();
     const reservation = await getReservationByAccessCode(reservationAccessCode);
-    const [reservationGroup, event, timeBlocks, reservationSlots] =
-      await Promise.all([
+    const [
+      reservationGroup,
+      event,
+      timeBlocks,
+      reservationSlots,
+      activeDates,
+      bufferOverrides,
+    ] = await Promise.all([
         getReservationGroupById(reservation.id),
         getPublicEventById(supabase, reservation.event_id),
         getTimeBlocksForEvent(supabase, reservation.event_id),
         getEventScheduleSlotsForEvent(supabase, reservation.event_id),
+        getEventActiveDates(supabase, reservation.event_id),
+        getEventBufferOverrides(supabase, reservation.event_id),
       ]);
 
     return actionOk({
+      activeDates,
+      bufferOverrides,
       event,
       passwordRequired:
         Boolean(reservation.password_hash) &&
@@ -110,6 +127,40 @@ export async function getReservationManagementView(
   } catch (error) {
     return actionError(getErrorMessage(error));
   }
+}
+
+async function getEventActiveDates(
+  supabase: AdminSupabaseClient,
+  eventId: string,
+) {
+  const { data, error } = await supabase
+    .from("event_active_dates")
+    .select("active_date")
+    .eq("event_id", eventId)
+    .order("active_date", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data?.map((row) => row.active_date) ?? [];
+}
+
+async function getEventBufferOverrides(
+  supabase: AdminSupabaseClient,
+  eventId: string,
+) {
+  const { data, error } = await supabase
+    .from("event_buffer_overrides")
+    .select("*")
+    .eq("event_id", eventId)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data ?? [];
 }
 
 export type ListEventReservationsInput = {
@@ -230,6 +281,73 @@ export async function reviewReservation(
     );
 
     return actionOk({ reservation: reservationGroup });
+  } catch (error) {
+    return actionError(getErrorMessage(error));
+  }
+}
+
+export type UpdateConfirmedReservationSlotTimeInput = {
+  eventId: string;
+  slotId: string;
+  timeRange: TimeRange;
+};
+
+export type UpdateConfirmedReservationSlotTimeData = {
+  slot: ReservationSlot;
+};
+
+export async function updateConfirmedReservationSlotTime(
+  input: UpdateConfirmedReservationSlotTimeInput,
+): Promise<ActionResult<UpdateConfirmedReservationSlotTimeData>> {
+  try {
+    const eventId = requireUuid(input.eventId, "eventId");
+    const slotId = requireUuid(input.slotId, "slotId");
+    const timeRange = requireTimeRange(input.timeRange, "timeRange");
+    const { admin, event } = await getHostEventContext(eventId);
+    const { data: slot, error: slotError } = await admin
+      .from("reservation_slots")
+      .select("*")
+      .eq("id", slotId)
+      .eq("event_id", event.id)
+      .single();
+
+    if (slotError || !slot) {
+      return actionError("수정할 확정 일정을 찾을 수 없습니다.");
+    }
+
+    if (!slot.is_confirmed) {
+      return actionError("확정된 일정만 크기를 조절할 수 있습니다.");
+    }
+
+    await assertSlotCanBeConfirmed(
+      admin,
+      event,
+      {
+        ...slot,
+        end_at: timeRange.endAt,
+        start_at: timeRange.startAt,
+      },
+      slot.reservation_id,
+    );
+
+    const { data, error } = await admin
+      .from("reservation_slots")
+      .update({
+        end_at: timeRange.endAt,
+        start_at: timeRange.startAt,
+      })
+      .eq("id", slot.id)
+      .select("id,start_at,end_at,is_confirmed")
+      .single();
+
+    if (error || !data) {
+      return actionError("확정 일정을 저장할 수 없습니다.");
+    }
+
+    revalidatePath(`/host/events/${event.id}`);
+    revalidatePath(`/event/${event.event_code}`);
+
+    return actionOk({ slot: data });
   } catch (error) {
     return actionError(getErrorMessage(error));
   }
@@ -970,18 +1088,66 @@ async function assertSlotCanBeConfirmed(
     throw new Error(confirmedSlotsError.message);
   }
 
-  const bufferMinutesBefore =
-    event.is_buffer_active && event.is_buffer_before_active
-      ? event.buffer_time_minutes
-      : 0;
-  const bufferMinutesAfter =
-    event.is_buffer_active && event.is_buffer_after_active
-      ? event.buffer_time_minutes
-      : 0;
+  const { data: bufferOverrides, error: bufferOverridesError } = await supabase
+    .from("event_buffer_overrides")
+    .select(
+      "reservation_slot_id,side,is_active,custom_start_at,custom_end_at",
+    )
+    .eq("event_id", event.id);
+
+  if (bufferOverridesError) {
+    throw new Error(bufferOverridesError.message);
+  }
+
+  const bufferOverrideByKey = new Map(
+    bufferOverrides?.map((override) => [
+      getBufferOverrideKey(
+        override.reservation_slot_id,
+        override.side as "AFTER" | "BEFORE",
+      ),
+      override,
+    ]) ?? [],
+  );
+  const confirmedOrBufferRanges: TimeRange[] = [
+    ...(confirmedSlots?.map((confirmedSlot) => ({
+      endAt: confirmedSlot.end_at,
+      startAt: confirmedSlot.start_at,
+    })) ?? []),
+    ...buildBufferTimeRangeItems(
+      confirmedSlots?.map((confirmedSlot) => ({
+        endAt: confirmedSlot.end_at,
+        id: confirmedSlot.id,
+        startAt: confirmedSlot.start_at,
+      })) ?? [],
+      event.buffer_time_minutes,
+      {
+        afterActive: true,
+        beforeActive: true,
+      },
+    ).flatMap((bufferItem) => {
+      const override = bufferOverrideByKey.get(bufferItem.id);
+      const globallyActive =
+        event.is_buffer_active &&
+        (bufferItem.side === "BEFORE"
+          ? event.is_buffer_before_active
+          : event.is_buffer_after_active);
+      const isActive = override ? override.is_active : globallyActive;
+
+      if (!isActive) {
+        return [];
+      }
+
+      return [
+        {
+          endAt: override?.custom_end_at ?? bufferItem.endAt,
+          startAt: override?.custom_start_at ?? bufferItem.startAt,
+        },
+      ];
+    }),
+  ];
   const blockReason = getCandidateSlotBlockReason({
-    bufferMinutesAfter,
-    bufferMinutesBefore,
     candidate: slotRange,
+    confirmedOrBufferRanges,
     confirmedRanges:
       confirmedSlots?.map((confirmedSlot) => ({
         endAt: confirmedSlot.end_at,

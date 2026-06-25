@@ -14,9 +14,40 @@ export type Database = {
   }
   public: {
     Tables: {
+      event_active_dates: {
+        Row: {
+          active_date: string
+          created_at: string
+          event_id: string
+          id: string
+        }
+        Insert: {
+          active_date: string
+          created_at?: string
+          event_id: string
+          id?: string
+        }
+        Update: {
+          active_date?: string
+          created_at?: string
+          event_id?: string
+          id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "event_active_dates_event_id_fkey"
+            columns: ["event_id"]
+            isOneToOne: false
+            referencedRelation: "events"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       event_buffer_overrides: {
         Row: {
           created_at: string
+          custom_end_at: string | null
+          custom_start_at: string | null
           event_id: string
           id: string
           is_active: boolean
@@ -26,6 +57,8 @@ export type Database = {
         }
         Insert: {
           created_at?: string
+          custom_end_at?: string | null
+          custom_start_at?: string | null
           event_id: string
           id?: string
           is_active?: boolean
@@ -35,6 +68,8 @@ export type Database = {
         }
         Update: {
           created_at?: string
+          custom_end_at?: string | null
+          custom_start_at?: string | null
           event_id?: string
           id?: string
           is_active?: boolean
