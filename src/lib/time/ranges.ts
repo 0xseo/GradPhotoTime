@@ -86,29 +86,91 @@ export function expandRangeByMinutes(
   };
 }
 
-export function buildBufferTimeRanges(ranges: TimeRange[], bufferMinutes: number) {
+export type BufferTimeRangeOptions = {
+  afterActive?: boolean;
+  beforeActive?: boolean;
+  inactiveKeys?: Set<string>;
+};
+
+export function buildBufferTimeRanges(
+  ranges: TimeRange[],
+  bufferMinutes: number,
+  options?: BufferTimeRangeOptions,
+) {
+  return mergeTimeRanges(
+    buildBufferTimeRangeItems(
+      ranges.map((range, index) => ({
+        ...range,
+        id: `${range.startAt}-${range.endAt}-${index}`,
+      })),
+      bufferMinutes,
+      options,
+    ).map(({ endAt, startAt }) => ({ endAt, startAt })),
+  );
+}
+
+export type BufferRangeSide = "BEFORE" | "AFTER";
+
+export type BufferTimeRangeItem = TimeRange & {
+  id: string;
+  reservationSlotId: string;
+  side: BufferRangeSide;
+};
+
+export type BufferRangeSource = TimeRange & {
+  id: string;
+};
+
+export function buildBufferTimeRangeItems(
+  ranges: BufferRangeSource[],
+  bufferMinutes: number,
+  {
+    afterActive = true,
+    beforeActive = true,
+    inactiveKeys = new Set<string>(),
+  }: BufferTimeRangeOptions = {},
+) {
   if (bufferMinutes <= 0) {
     return [];
   }
 
-  return mergeTimeRanges(
-    ranges.flatMap((range) => {
-      const start = new Date(range.startAt).getTime();
-      const end = new Date(range.endAt).getTime();
-      const bufferMs = bufferMinutes * MINUTE_IN_MS;
+  return ranges.flatMap<BufferTimeRangeItem>((range) => {
+    const start = new Date(range.startAt).getTime();
+    const end = new Date(range.endAt).getTime();
+    const bufferMs = bufferMinutes * MINUTE_IN_MS;
+    const beforeKey = getBufferOverrideKey(range.id, "BEFORE");
+    const afterKey = getBufferOverrideKey(range.id, "AFTER");
+    const items: BufferTimeRangeItem[] = [];
 
-      return [
-        {
-          startAt: new Date(start - bufferMs).toISOString(),
-          endAt: range.startAt,
-        },
-        {
-          startAt: range.endAt,
-          endAt: new Date(end + bufferMs).toISOString(),
-        },
-      ].filter(isValidTimeRange);
-    }),
-  );
+    if (beforeActive && !inactiveKeys.has(beforeKey)) {
+      items.push({
+        id: beforeKey,
+        reservationSlotId: range.id,
+        side: "BEFORE",
+        startAt: new Date(start - bufferMs).toISOString(),
+        endAt: range.startAt,
+      });
+    }
+
+    if (afterActive && !inactiveKeys.has(afterKey)) {
+      items.push({
+        id: afterKey,
+        reservationSlotId: range.id,
+        side: "AFTER",
+        startAt: range.endAt,
+        endAt: new Date(end + bufferMs).toISOString(),
+      });
+    }
+
+    return items.filter(isValidTimeRange);
+  });
+}
+
+export function getBufferOverrideKey(
+  reservationSlotId: string,
+  side: BufferRangeSide,
+) {
+  return `${reservationSlotId}:${side}`;
 }
 
 export function clampRangeToGrid(range: TimeRange, config: TimeGridConfig) {

@@ -25,11 +25,15 @@ export function getReservationEditCapabilities(status: ReservationStatus) {
 
 export function getCandidateSlotBlockReason({
   bufferMinutes,
+  bufferMinutesAfter,
+  bufferMinutesBefore,
   candidate,
   confirmedRanges,
   timeBlocks,
 }: {
-  bufferMinutes: number;
+  bufferMinutes?: number;
+  bufferMinutesAfter?: number;
+  bufferMinutesBefore?: number;
   candidate: TimeRange;
   confirmedRanges: TimeRange[];
   timeBlocks: ReviewableTimeBlock[];
@@ -53,11 +57,22 @@ export function getCandidateSlotBlockReason({
     return "OUTSIDE_AVAILABLE";
   }
 
-  const normalizedBufferMinutes = Math.max(bufferMinutes, 0);
+  const normalizedBufferMinutesBefore = Math.max(
+    bufferMinutesBefore ?? bufferMinutes ?? 0,
+    0,
+  );
+  const normalizedBufferMinutesAfter = Math.max(
+    bufferMinutesAfter ?? bufferMinutes ?? 0,
+    0,
+  );
   const overlapsConfirmedOrBuffer = confirmedRanges.some((confirmedRange) =>
     rangesOverlap(
       candidate,
-      expandRangeByMinutes(confirmedRange, normalizedBufferMinutes),
+      expandRangeByMinutes(
+        confirmedRange,
+        normalizedBufferMinutesBefore,
+        normalizedBufferMinutesAfter,
+      ),
     ),
   );
 

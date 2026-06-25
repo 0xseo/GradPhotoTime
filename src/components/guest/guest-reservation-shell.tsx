@@ -45,9 +45,18 @@ export function GuestReservationShell({
   const bufferRanges = useMemo<TimeRange[]>(
     () =>
       event.is_buffer_active
-        ? buildBufferTimeRanges(confirmedRanges, event.buffer_time_minutes)
+        ? buildBufferTimeRanges(confirmedRanges, event.buffer_time_minutes, {
+            afterActive: event.is_buffer_after_active,
+            beforeActive: event.is_buffer_before_active,
+          })
         : [],
-    [confirmedRanges, event.buffer_time_minutes, event.is_buffer_active],
+    [
+      confirmedRanges,
+      event.buffer_time_minutes,
+      event.is_buffer_active,
+      event.is_buffer_after_active,
+      event.is_buffer_before_active,
+    ],
   );
   const blockedRanges = useMemo<TimeRange[]>(
     () => [

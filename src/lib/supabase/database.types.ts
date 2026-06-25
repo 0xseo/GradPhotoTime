@@ -14,6 +14,51 @@ export type Database = {
   }
   public: {
     Tables: {
+      event_buffer_overrides: {
+        Row: {
+          created_at: string
+          event_id: string
+          id: string
+          is_active: boolean
+          reservation_slot_id: string
+          side: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          event_id: string
+          id?: string
+          is_active?: boolean
+          reservation_slot_id: string
+          side: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          event_id?: string
+          id?: string
+          is_active?: boolean
+          reservation_slot_id?: string
+          side?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "event_buffer_overrides_event_id_fkey"
+            columns: ["event_id"]
+            isOneToOne: false
+            referencedRelation: "events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "event_buffer_overrides_reservation_slot_id_fkey"
+            columns: ["reservation_slot_id"]
+            isOneToOne: false
+            referencedRelation: "reservation_slots"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       events: {
         Row: {
           buffer_time_minutes: number
@@ -27,6 +72,8 @@ export type Database = {
           host_id: string
           id: string
           is_buffer_active: boolean
+          is_buffer_after_active: boolean
+          is_buffer_before_active: boolean
           timezone: string
           title: string
           updated_at: string
@@ -43,6 +90,8 @@ export type Database = {
           host_id: string
           id?: string
           is_buffer_active?: boolean
+          is_buffer_after_active?: boolean
+          is_buffer_before_active?: boolean
           timezone?: string
           title: string
           updated_at?: string
@@ -59,6 +108,8 @@ export type Database = {
           host_id?: string
           id?: string
           is_buffer_active?: boolean
+          is_buffer_after_active?: boolean
+          is_buffer_before_active?: boolean
           timezone?: string
           title?: string
           updated_at?: string

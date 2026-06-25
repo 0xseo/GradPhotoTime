@@ -194,6 +194,11 @@ function DaySelectionGrid({
       (slotMinutes * 60_000),
     1,
   );
+  const hourCount = Math.max(
+    (new Date(gridEndAt).getTime() - new Date(gridStartAt).getTime()) /
+      3_600_000,
+    1,
+  );
   const height = `${Math.max(34, rowCount * 0.34)}rem`;
   const interactiveProps = readOnly ? undefined : gridProps;
 
@@ -212,8 +217,8 @@ function DaySelectionGrid({
         className="absolute inset-0"
         style={{
           backgroundImage:
-            "linear-gradient(to bottom, rgba(217,222,232,0.8) 1px, transparent 1px)",
-          backgroundSize: `100% ${100 / rowCount}%`,
+            "linear-gradient(to bottom, rgba(217,222,232,0.55) 1px, transparent 1px), linear-gradient(to bottom, rgba(0,38,75,0.2) 2px, transparent 2px)",
+          backgroundSize: `100% ${100 / rowCount}%, 100% ${100 / hourCount}%`,
         }}
       />
 
@@ -222,6 +227,10 @@ function DaySelectionGrid({
           gridEndAt={gridEndAt}
           gridStartAt={gridStartAt}
           key={block.id}
+          details={formatTimeRange({
+            endAt: block.end_at,
+            startAt: block.start_at,
+          })}
           label={block.type === "AVAILABLE" ? "가능" : "불가"}
           range={{ endAt: block.end_at, startAt: block.start_at }}
           tone={block.type === "AVAILABLE" ? "available-soft" : "blocked"}
@@ -233,6 +242,7 @@ function DaySelectionGrid({
           gridEndAt={gridEndAt}
           gridStartAt={gridStartAt}
           key={`${range.startAt}-${range.endAt}`}
+          details={formatTimeRange(range)}
           label="버퍼"
           range={range}
           tone="buffer"
@@ -243,8 +253,9 @@ function DaySelectionGrid({
         <RangeBlock
           gridEndAt={gridEndAt}
           gridStartAt={gridStartAt}
+          details={formatSlotDetails(slot)}
           key={slot.id}
-          label={slot.is_confirmed ? "확정" : "대기"}
+          label={formatSlotLabel(slot)}
           range={{ endAt: slot.end_at, startAt: slot.start_at }}
           tone={slot.is_confirmed ? "confirmed" : "waitlist"}
         />
@@ -254,6 +265,7 @@ function DaySelectionGrid({
         <RangeBlock
           gridEndAt={gridEndAt}
           gridStartAt={gridStartAt}
+          details={formatTimeRange(range)}
           key={range.id}
           label={range.availability === "waitlist" ? "대기 신청" : "선택"}
           range={range}
@@ -265,6 +277,7 @@ function DaySelectionGrid({
         <RangeBlock
           gridEndAt={gridEndAt}
           gridStartAt={gridStartAt}
+          details={formatTimeRange(draftRange)}
           label={draftAvailability === "blocked" ? "불가" : "선택 중"}
           range={draftRange}
           tone={draftAvailability === "blocked" ? "blocked" : "draft"}
@@ -290,12 +303,14 @@ type RangeTone =
   | "waitlist";
 
 function RangeBlock({
+  details,
   gridEndAt,
   gridStartAt,
   label,
   range,
   tone,
 }: {
+  details?: string;
   gridEndAt: string;
   gridStartAt: string;
   label: string;
@@ -327,11 +342,31 @@ function RangeBlock({
           "border-amber-300 bg-[repeating-linear-gradient(135deg,#fef3c7_0,#fef3c7_6px,#fde68a_6px,#fde68a_12px)] text-amber-900",
       )}
       style={layout}
+      title={details ?? formatTimeRange(range)}
     >
       <div className="truncate">{label}</div>
-      <div className="truncate font-mono text-[10px] opacity-80">
-        {formatTimeRange(range)}
-      </div>
     </div>
   );
+}
+
+function formatSlotLabel(slot: EventScheduleSlot) {
+  const names = slot.participantNames.filter(Boolean);
+
+  if (names.length === 0) {
+    return slot.is_confirmed ? `확정 (${slot.headcount}명)` : `대기 (${slot.headcount}명)`;
+  }
+
+  return `${names[0]} (${slot.headcount}명)`;
+}
+
+function formatSlotDetails(slot: EventScheduleSlot) {
+  const names = slot.participantNames.filter(Boolean);
+  const participants = names.length > 0 ? names.join(", ") : "이름 없음";
+  const status = slot.is_confirmed ? "확정" : "대기";
+  const time = formatTimeRange({
+    endAt: slot.end_at,
+    startAt: slot.start_at,
+  });
+
+  return `${status} | ${participants} | 총 ${slot.headcount}명 | ${time} | 관리 코드 ${slot.reservationAccessCode}`;
 }

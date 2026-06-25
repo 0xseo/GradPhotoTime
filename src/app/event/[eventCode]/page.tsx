@@ -1,8 +1,11 @@
+import { redirect } from "next/navigation";
 import { CalendarShell } from "@/components/calendar/calendar-shell";
 import { ReservationCodeEntry } from "@/components/guest/event-code-entry";
 import { GuestReservationShell } from "@/components/guest/guest-reservation-shell";
 import { verifyEventCode } from "@/app/actions/events";
 import { listTimeBlocks } from "@/app/actions/time-blocks";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type EventPageProps = {
   params: Promise<{
@@ -25,6 +28,25 @@ export default async function EventPage({ params }: EventPageProps) {
   }
 
   const event = eventResult.data.event;
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (user) {
+    const admin = createSupabaseAdminClient();
+    const { data: hostEvent } = await admin
+      .from("events")
+      .select("id")
+      .eq("id", event.id)
+      .eq("host_id", user.id)
+      .maybeSingle();
+
+    if (hostEvent) {
+      redirect(`/host/events/${event.id}`);
+    }
+  }
+
   const scheduleResult = await listTimeBlocks({ eventCode: event.event_code });
 
   return (

@@ -18,6 +18,9 @@ export type EventScheduleSlot = Pick<
   Tables<"reservation_slots">,
   "end_at" | "id" | "is_confirmed" | "reservation_id" | "start_at"
 > & {
+  headcount: number;
+  participantNames: string[];
+  reservationAccessCode: string;
   reservationStatus: Tables<"reservations">["status"];
 };
 
@@ -213,7 +216,7 @@ async function listReservationSlotsForEvent(
   ];
   const { data: reservations, error: reservationsError } = await supabase
     .from("reservations")
-    .select("id,status")
+    .select("id,status,headcount,reservation_access_code")
     .in("id", reservationIds);
 
   if (reservationsError) {
@@ -223,10 +226,23 @@ async function listReservationSlotsForEvent(
   const statusByReservationId = new Map(
     reservations?.map((reservation) => [reservation.id, reservation.status]) ?? [],
   );
+  const reservationById = new Map(
+    reservations?.map((reservation) => [reservation.id, reservation]) ?? [],
+  );
+  const { data: participants, error: participantsError } = await supabase
+    .from("reservation_participants")
+    .select("reservation_id,guest_name")
+    .in("reservation_id", reservationIds)
+    .order("created_at", { ascending: true });
+
+  if (participantsError) {
+    throw new Error(participantsError.message);
+  }
 
   return slots.flatMap<EventScheduleSlot>((slot) => {
     const reservationStatus =
       statusByReservationId.get(slot.reservation_id) ?? "PENDING";
+    const reservation = reservationById.get(slot.reservation_id);
 
     if (reservationStatus === "REJECTED" || reservationStatus === "CANCELLED") {
       return [];
@@ -235,8 +251,17 @@ async function listReservationSlotsForEvent(
     return [
       {
         end_at: slot.end_at,
+        headcount: reservation?.headcount ?? 1,
         id: slot.id,
         is_confirmed: slot.is_confirmed,
+        participantNames:
+          participants
+            ?.filter(
+              (participant) =>
+                participant.reservation_id === slot.reservation_id,
+            )
+            .map((participant) => participant.guest_name) ?? [],
+        reservationAccessCode: reservation?.reservation_access_code ?? "",
         reservation_id: slot.reservation_id,
         reservationStatus,
         start_at: slot.start_at,

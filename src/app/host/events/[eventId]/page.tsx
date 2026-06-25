@@ -1,5 +1,6 @@
 import { CalendarShell } from "@/components/calendar/calendar-shell";
 import { HostDashboardShell } from "@/components/host/host-dashboard-shell";
+import { listEventBufferOverrides } from "@/app/actions/events";
 import { listEventReservations } from "@/app/actions/reservations";
 import { listTimeBlocks } from "@/app/actions/time-blocks";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
@@ -21,7 +22,7 @@ export default async function HostEventPage({ params }: HostEventPageProps) {
   const { data: event, error } = await admin
     .from("events")
     .select(
-      "id,event_code,host_id,title,description,date_start,date_end,daily_start_time,daily_end_time,timezone,buffer_time_minutes,is_buffer_active",
+      "id,event_code,host_id,title,description,date_start,date_end,daily_start_time,daily_end_time,timezone,buffer_time_minutes,is_buffer_active,is_buffer_before_active,is_buffer_after_active",
     )
     .eq("id", eventId)
     .eq("host_id", user?.id ?? "")
@@ -39,12 +40,15 @@ export default async function HostEventPage({ params }: HostEventPageProps) {
 
   const scheduleResult = await listTimeBlocks({ eventId });
   const reservationsResult = await listEventReservations({ eventId });
+  const bufferOverridesResult = await listEventBufferOverrides({ eventId });
 
-  if (!scheduleResult.ok || !reservationsResult.ok) {
+  if (!scheduleResult.ok || !reservationsResult.ok || !bufferOverridesResult.ok) {
     const errorMessage = !scheduleResult.ok
       ? scheduleResult.error
       : !reservationsResult.ok
         ? reservationsResult.error
+        : !bufferOverridesResult.ok
+          ? bufferOverridesResult.error
         : "일정 정보를 불러오지 못했습니다.";
 
     return (
@@ -69,6 +73,7 @@ export default async function HostEventPage({ params }: HostEventPageProps) {
         </p>
       ) : null}
       <HostDashboardShell
+        bufferOverrides={bufferOverridesResult.data.bufferOverrides}
         event={event}
         reservations={reservationsResult.data.reservations}
         reservationSlots={scheduleResult.data.reservationSlots}

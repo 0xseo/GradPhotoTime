@@ -2,6 +2,7 @@ import Link from "next/link";
 import {
   CalendarCheck,
   CalendarClock,
+  CalendarDays,
   CalendarPlus,
   Clock,
   Users,
@@ -37,10 +38,16 @@ export default async function Home() {
           </div>
 
           {dashboard?.user ? (
-            <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-              <HostedEventsPanel hostedEvents={dashboard.hostedEvents} />
-              <GuestReservationsPanel reservations={dashboard.reservations} />
-            </div>
+            <>
+              <WeeklySchedulePanel
+                hostedEvents={dashboard.hostedEvents}
+                reservations={dashboard.reservations}
+              />
+              <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+                <HostedEventsPanel hostedEvents={dashboard.hostedEvents} />
+                <GuestReservationsPanel reservations={dashboard.reservations} />
+              </div>
+            </>
           ) : (
             <div className="border border-border bg-muted p-5 text-sm leading-6 text-muted-foreground">
               로그인하면 내가 만든 이벤트와 내가 신청한 예약이 첫 화면에 표시됩니다.
@@ -55,6 +62,83 @@ export default async function Home() {
         </div>
       </section>
     </main>
+  );
+}
+
+type WeeklyScheduleItem = {
+  href: string;
+  id: string;
+  sortAt: string;
+  status: "APPROVED" | "PENDING";
+  time: string;
+  title: string;
+};
+
+function WeeklySchedulePanel({
+  hostedEvents,
+  reservations,
+}: {
+  hostedEvents: DashboardHostedEvent[];
+  reservations: DashboardGuestReservation[];
+}) {
+  const days = buildUpcomingDays(7);
+  const itemsByDate = buildWeeklyScheduleItems(hostedEvents, reservations);
+
+  return (
+    <section className="border border-border bg-background p-5">
+      <div className="mb-4 flex items-center gap-2 text-primary">
+        <CalendarDays className="size-5" aria-hidden="true" />
+        <h2 className="font-serif text-2xl font-semibold">내 7일 일정</h2>
+      </div>
+      <div className="grid gap-2 md:grid-cols-7">
+        {days.map((day) => {
+          const items = itemsByDate.get(day.date) ?? [];
+
+          return (
+            <div
+              className="min-h-32 border border-border bg-muted px-3 py-3"
+              key={day.date}
+            >
+              <div className="mb-3">
+                <p className="font-serif text-lg font-semibold text-primary">
+                  {day.label}
+                </p>
+                <p className="text-xs text-muted-foreground">{day.weekday}</p>
+              </div>
+              {items.length > 0 ? (
+                <div className="space-y-2">
+                  {items.map((item) => (
+                    <Link
+                      className="block rounded-md border border-border bg-background px-2 py-2 text-xs hover:border-primary"
+                      href={item.href}
+                      key={item.id}
+                    >
+                      <span className="block truncate font-medium text-foreground">
+                        {item.title}
+                      </span>
+                      <span className="mt-1 block font-mono text-[11px] text-muted-foreground">
+                        {item.time}
+                      </span>
+                      <span
+                        className={`mt-2 inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${
+                          item.status === "APPROVED"
+                            ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                            : "border-amber-200 bg-amber-50 text-amber-800"
+                        }`}
+                      >
+                        {item.status === "APPROVED" ? "확정" : "대기"}
+                      </span>
+                    </Link>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">일정 없음</p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -275,4 +359,101 @@ function EmptyState({ text }: { text: string }) {
       {text}
     </p>
   );
+}
+
+function buildWeeklyScheduleItems(
+  hostedEvents: DashboardHostedEvent[],
+  reservations: DashboardGuestReservation[],
+) {
+  const itemsByDate = new Map<string, WeeklyScheduleItem[]>();
+
+  for (const event of hostedEvents) {
+    for (const slot of event.confirmedSlots) {
+      pushWeeklyItem(itemsByDate, slot, {
+        href: `/host/events/${event.id}`,
+        status: "APPROVED",
+        title: `${event.title} · Host`,
+      });
+    }
+
+    for (const slot of event.pendingSlots) {
+      pushWeeklyItem(itemsByDate, slot, {
+        href: `/host/events/${event.id}`,
+        status: "PENDING",
+        title: `${event.title} · Host`,
+      });
+    }
+  }
+
+  for (const reservation of reservations) {
+    if (reservation.status !== "APPROVED" && reservation.status !== "PENDING") {
+      continue;
+    }
+
+    for (const slot of reservation.slots) {
+      pushWeeklyItem(itemsByDate, slot, {
+        href: `/reservations/${reservation.reservation_access_code}`,
+        status: reservation.status,
+        title: reservation.event?.title ?? "예약",
+      });
+    }
+  }
+
+  for (const [date, items] of itemsByDate) {
+    itemsByDate.set(
+      date,
+      items.sort(
+        (left, right) =>
+          new Date(left.sortAt).getTime() - new Date(right.sortAt).getTime(),
+      ),
+    );
+  }
+
+  return itemsByDate;
+}
+
+function pushWeeklyItem(
+  itemsByDate: Map<string, WeeklyScheduleItem[]>,
+  slot: DashboardSlot,
+  item: Omit<WeeklyScheduleItem, "id" | "sortAt" | "time">,
+) {
+  const date = toDateOnly(new Date(slot.start_at));
+  const nextItem: WeeklyScheduleItem = {
+    ...item,
+    id: `${item.href}:${slot.id}:${item.status}`,
+    sortAt: slot.start_at,
+    time: formatTimeRange({ endAt: slot.end_at, startAt: slot.start_at }),
+  };
+
+  itemsByDate.set(date, [...(itemsByDate.get(date) ?? []), nextItem]);
+}
+
+function buildUpcomingDays(count: number) {
+  const formatter = new Intl.DateTimeFormat("ko-KR", {
+    day: "numeric",
+    month: "short",
+  });
+  const weekdayFormatter = new Intl.DateTimeFormat("ko-KR", {
+    weekday: "short",
+  });
+
+  return Array.from({ length: count }, (_, index) => {
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
+    date.setDate(date.getDate() + index);
+
+    return {
+      date: toDateOnly(date),
+      label: formatter.format(date),
+      weekday: weekdayFormatter.format(date),
+    };
+  });
+}
+
+function toDateOnly(date: Date) {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
 }

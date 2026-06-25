@@ -36,6 +36,8 @@ export function EventCreateForm() {
   const [dateEnd, setDateEnd] = useState(today);
   const [dateStart, setDateStart] = useState(today);
   const [error, setError] = useState<string | null>(null);
+  const [isBufferAfterActive, setIsBufferAfterActive] = useState(true);
+  const [isBufferBeforeActive, setIsBufferBeforeActive] = useState(true);
   const [isPending, setIsPending] = useState(false);
   const clearSelection = useSelectionStore((state) => state.clearSelection);
   const selectedRanges = useSelectionStore((state) => state.selectedRanges);
@@ -90,7 +92,9 @@ export function EventCreateForm() {
         endAt: range.endAt,
         startAt: range.startAt,
       })),
-      isBufferActive: formData.get("isBufferActive") === "on",
+      isBufferActive: isBufferBeforeActive || isBufferAfterActive,
+      isBufferAfterActive,
+      isBufferBeforeActive,
       title: String(formData.get("title") ?? ""),
     });
 
@@ -156,20 +160,40 @@ export function EventCreateForm() {
           value={dailyEndTime}
         />
       </div>
-      <div className="grid grid-cols-[1fr_auto] items-end gap-3">
+      <div className="space-y-3">
         <Input
           defaultValue={30}
-          label="버퍼 타임"
+          label="버퍼 타임(분)"
           max={180}
           min={0}
           name="bufferTimeMinutes"
           step={10}
           type="number"
         />
-        <label className="flex h-12 items-center gap-2 rounded-md border border-border px-3 text-sm text-foreground">
-          <input className="size-4 accent-primary" name="isBufferActive" type="checkbox" />
-          사용
-        </label>
+        <div className="grid grid-cols-2 gap-2">
+          <label className="flex h-11 items-center justify-center gap-2 rounded-md border border-border bg-background text-sm text-foreground">
+            <input
+              checked={isBufferBeforeActive}
+              className="size-4 accent-primary"
+              onChange={(eventChange) =>
+                setIsBufferBeforeActive(eventChange.target.checked)
+              }
+              type="checkbox"
+            />
+            약속 전
+          </label>
+          <label className="flex h-11 items-center justify-center gap-2 rounded-md border border-border bg-background text-sm text-foreground">
+            <input
+              checked={isBufferAfterActive}
+              className="size-4 accent-primary"
+              onChange={(eventChange) =>
+                setIsBufferAfterActive(eventChange.target.checked)
+              }
+              type="checkbox"
+            />
+            약속 후
+          </label>
+        </div>
       </div>
 
       {canShowGrid ? (

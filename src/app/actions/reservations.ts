@@ -138,7 +138,7 @@ export type ReviewReservationInput = {
   confirmedSlotId?: string | null;
   eventId: string;
   reservationId: string;
-  status: Extract<ReservationStatus, "APPROVED" | "REJECTED">;
+  status: Extract<ReservationStatus, "APPROVED" | "PENDING" | "REJECTED">;
 };
 
 export type ReviewReservationData = {
@@ -161,7 +161,7 @@ export async function reviewReservation(
       return actionError("취소된 예약은 처리할 수 없습니다.");
     }
 
-    if (payload.status === "REJECTED") {
+    if (payload.status === "REJECTED" || payload.status === "PENDING") {
       const { error: slotsError } = await admin
         .from("reservation_slots")
         .update({ is_confirmed: false })
@@ -173,7 +173,7 @@ export async function reviewReservation(
 
       const { error: reservationError } = await admin
         .from("reservations")
-        .update({ status: "REJECTED" })
+        .update({ status: payload.status })
         .eq("id", reservation.id);
 
       if (reservationError) {
@@ -588,8 +588,12 @@ function parseReviewReservationInput(input: ReviewReservationInput) {
       ? null
       : requireUuid(input.confirmedSlotId, "confirmedSlotId");
 
-  if (input.status !== "APPROVED" && input.status !== "REJECTED") {
-    throw new Error("status must be APPROVED or REJECTED.");
+  if (
+    input.status !== "APPROVED" &&
+    input.status !== "PENDING" &&
+    input.status !== "REJECTED"
+  ) {
+    throw new Error("status must be APPROVED, PENDING, or REJECTED.");
   }
 
   return {
@@ -736,7 +740,7 @@ async function getPublicEventById(
   const { data, error } = await supabase
     .from("events")
     .select(
-      "id,event_code,title,description,date_start,date_end,daily_start_time,daily_end_time,timezone,buffer_time_minutes,is_buffer_active",
+      "id,event_code,title,description,date_start,date_end,daily_start_time,daily_end_time,timezone,buffer_time_minutes,is_buffer_active,is_buffer_before_active,is_buffer_after_active",
     )
     .eq("id", eventId)
     .single();
@@ -788,7 +792,7 @@ async function getEventScheduleSlotsForEvent(
   ];
   const { data: reservations, error: reservationsError } = await supabase
     .from("reservations")
-    .select("id,status")
+    .select("id,status,headcount,reservation_access_code")
     .in("id", reservationIds);
 
   if (reservationsError) {
@@ -798,10 +802,23 @@ async function getEventScheduleSlotsForEvent(
   const statusByReservationId = new Map(
     reservations?.map((reservation) => [reservation.id, reservation.status]) ?? [],
   );
+  const reservationById = new Map(
+    reservations?.map((reservation) => [reservation.id, reservation]) ?? [],
+  );
+  const { data: participants, error: participantsError } = await supabase
+    .from("reservation_participants")
+    .select("reservation_id,guest_name")
+    .in("reservation_id", reservationIds)
+    .order("created_at", { ascending: true });
+
+  if (participantsError) {
+    throw new Error(participantsError.message);
+  }
 
   return slots.flatMap<EventScheduleSlot>((slot) => {
     const reservationStatus =
       statusByReservationId.get(slot.reservation_id) ?? "PENDING";
+    const reservation = reservationById.get(slot.reservation_id);
 
     if (reservationStatus === "REJECTED" || reservationStatus === "CANCELLED") {
       return [];
@@ -810,8 +827,17 @@ async function getEventScheduleSlotsForEvent(
     return [
       {
         end_at: slot.end_at,
+        headcount: reservation?.headcount ?? 1,
         id: slot.id,
         is_confirmed: slot.is_confirmed,
+        participantNames:
+          participants
+            ?.filter(
+              (participant) =>
+                participant.reservation_id === slot.reservation_id,
+            )
+            .map((participant) => participant.guest_name) ?? [],
+        reservationAccessCode: reservation?.reservation_access_code ?? "",
         reservation_id: slot.reservation_id,
         reservationStatus,
         start_at: slot.start_at,
@@ -895,7 +921,7 @@ async function getHostEventContext(eventId: string) {
   const { data: event, error: eventError } = await admin
     .from("events")
     .select(
-      "id,event_code,host_id,buffer_time_minutes,is_buffer_active",
+      "id,event_code,host_id,buffer_time_minutes,is_buffer_active,is_buffer_before_active,is_buffer_after_active",
     )
     .eq("id", eventId)
     .single();
@@ -911,7 +937,11 @@ async function assertSlotCanBeConfirmed(
   supabase: AdminSupabaseClient,
   event: Pick<
     Tables<"events">,
-    "buffer_time_minutes" | "id" | "is_buffer_active"
+    | "buffer_time_minutes"
+    | "id"
+    | "is_buffer_active"
+    | "is_buffer_after_active"
+    | "is_buffer_before_active"
   >,
   slot: Tables<"reservation_slots">,
   reservationId: string,
@@ -940,9 +970,17 @@ async function assertSlotCanBeConfirmed(
     throw new Error(confirmedSlotsError.message);
   }
 
-  const bufferMinutes = event.is_buffer_active ? event.buffer_time_minutes : 0;
+  const bufferMinutesBefore =
+    event.is_buffer_active && event.is_buffer_before_active
+      ? event.buffer_time_minutes
+      : 0;
+  const bufferMinutesAfter =
+    event.is_buffer_active && event.is_buffer_after_active
+      ? event.buffer_time_minutes
+      : 0;
   const blockReason = getCandidateSlotBlockReason({
-    bufferMinutes,
+    bufferMinutesAfter,
+    bufferMinutesBefore,
     candidate: slotRange,
     confirmedRanges:
       confirmedSlots?.map((confirmedSlot) => ({
