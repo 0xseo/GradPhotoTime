@@ -18,6 +18,7 @@ import {
 } from "@/app/actions/reservations";
 import { TimeSelectionGrid } from "@/components/calendar/time-selection-grid";
 import { Button } from "@/components/ui/button";
+import { CopyButton } from "@/components/ui/copy-button";
 import { Input } from "@/components/ui/input";
 import { getReservationEditCapabilities } from "@/lib/reservations/rules";
 import { formatTimeRange } from "@/lib/time/event-days";
@@ -217,9 +218,15 @@ export function ReservationManagementShell({
           <p className="text-xs font-medium text-muted-foreground">
             예약 관리 코드
           </p>
-          <p className="mt-1 font-mono text-2xl font-semibold text-primary">
-            {reservation.reservation_access_code}
-          </p>
+          <div className="mt-1 flex items-center justify-between gap-2">
+            <p className="font-mono text-2xl font-semibold text-primary">
+              {reservation.reservation_access_code}
+            </p>
+            <CopyButton
+              aria-label="예약 관리 코드 복사"
+              value={reservation.reservation_access_code}
+            />
+          </div>
         </div>
 
         <form className="space-y-4" onSubmit={handleSave}>

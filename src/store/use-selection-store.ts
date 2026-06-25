@@ -1,6 +1,7 @@
 "use client";
 
 import { create } from "zustand";
+import { applySelectedTimeRange } from "@/lib/time/range-set";
 import type {
   SelectedTimeRange,
   TimeRange,
@@ -9,11 +10,13 @@ import type {
 } from "@/types/domain";
 
 type CommitBehavior = "append" | "replace";
+type SelectionOperation = "add" | "remove";
 
 type BeginSelectionInput = {
   anchorTimestamp: number;
   draftAvailability: TimeRangeAvailability;
   draftRange: TimeRange;
+  operation: SelectionOperation;
   pointerId: number;
 };
 
@@ -21,6 +24,7 @@ type SelectionState = {
   activePointerId: number | null;
   anchorTimestamp: number | null;
   draftAvailability: TimeRangeAvailability | null;
+  draftOperation: SelectionOperation;
   draftRange: TimeRange | null;
   isDragging: boolean;
   mode: TimeSelectionMode;
@@ -42,6 +46,7 @@ export const useSelectionStore = create<SelectionState>((set) => ({
   activePointerId: null,
   anchorTimestamp: null,
   draftAvailability: null,
+  draftOperation: "add",
   draftRange: null,
   isDragging: false,
   mode: "guest-reservation",
@@ -50,12 +55,14 @@ export const useSelectionStore = create<SelectionState>((set) => ({
     anchorTimestamp,
     draftAvailability,
     draftRange,
+    operation,
     pointerId,
   }) =>
     set({
       activePointerId: pointerId,
       anchorTimestamp,
       draftAvailability,
+      draftOperation: operation,
       draftRange,
       isDragging: true,
     }),
@@ -64,6 +71,7 @@ export const useSelectionStore = create<SelectionState>((set) => ({
       activePointerId: null,
       anchorTimestamp: null,
       draftAvailability: null,
+      draftOperation: "add",
       draftRange: null,
       isDragging: false,
     }),
@@ -72,6 +80,7 @@ export const useSelectionStore = create<SelectionState>((set) => ({
       activePointerId: null,
       anchorTimestamp: null,
       draftAvailability: null,
+      draftOperation: "add",
       draftRange: null,
       isDragging: false,
       selectedRanges: [],
@@ -83,26 +92,35 @@ export const useSelectionStore = create<SelectionState>((set) => ({
           activePointerId: null,
           anchorTimestamp: null,
           draftAvailability: null,
+          draftOperation: "add",
           draftRange: null,
           isDragging: false,
         };
       }
 
-      const nextRange = createSelectedTimeRange(
-        state.draftRange,
-        state.draftAvailability ?? "available",
-      );
+      const nextRanges =
+        behavior === "replace"
+          ? [
+              createSelectedTimeRange(
+                state.draftRange,
+                state.draftAvailability ?? "available",
+              ),
+            ]
+          : applySelectedTimeRange(
+              state.selectedRanges,
+              state.draftRange,
+              state.draftAvailability ?? "available",
+              state.draftOperation,
+            );
 
       return {
         activePointerId: null,
         anchorTimestamp: null,
         draftAvailability: null,
+        draftOperation: "add",
         draftRange: null,
         isDragging: false,
-        selectedRanges:
-          behavior === "replace"
-            ? [nextRange]
-            : [...state.selectedRanges, nextRange],
+        selectedRanges: nextRanges,
       };
     }),
   removeSelectedRange: (rangeId) =>

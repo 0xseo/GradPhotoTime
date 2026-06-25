@@ -15,7 +15,7 @@ export async function CalendarShell({
     <main className="min-h-dvh bg-background">
       <header className="border-b border-border">
         <div className="mx-auto max-w-6xl px-5 py-2">
-          <AppHeader ctaHref="/host/events/new" ctaLabel="이벤트 생성" />
+          <AppHeader />
         </div>
       </header>
 

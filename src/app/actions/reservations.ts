@@ -88,6 +88,7 @@ export async function getReservationManagementView(
       input.reservationAccessCode,
     );
     const supabase = createSupabaseAdminClient();
+    const currentUserId = await getCurrentUserId();
     const reservation = await getReservationByAccessCode(reservationAccessCode);
     const [reservationGroup, event, timeBlocks, reservationSlots] =
       await Promise.all([
@@ -99,7 +100,9 @@ export async function getReservationManagementView(
 
     return actionOk({
       event,
-      passwordRequired: Boolean(reservation.password_hash),
+      passwordRequired:
+        Boolean(reservation.password_hash) &&
+        !canManageReservationAsCreator(reservation, currentUserId),
       reservation: reservationGroup,
       reservationSlots,
       timeBlocks,
@@ -344,6 +347,7 @@ export async function updateReservationGroup(
 
     if (
       reservation.password_hash &&
+      !canManageReservationAsCreator(reservation, currentUserId) &&
       !verifyReservationPassword(payload.password ?? "", reservation.password_hash)
     ) {
       return actionError("예약 비밀번호가 일치하지 않습니다.");
@@ -465,6 +469,7 @@ export async function cancelReservationGroup(
       input.reservationAccessCode,
     );
     const password = optionalText(input.password, 100);
+    const currentUserId = await getCurrentUserId();
     const reservation = await getReservationByAccessCode(reservationAccessCode);
 
     if (reservation.status === "CANCELLED") {
@@ -477,6 +482,7 @@ export async function cancelReservationGroup(
 
     if (
       reservation.password_hash &&
+      !canManageReservationAsCreator(reservation, currentUserId) &&
       !verifyReservationPassword(password ?? "", reservation.password_hash)
     ) {
       return actionError("예약 비밀번호가 일치하지 않습니다.");
@@ -608,6 +614,13 @@ function buildParticipantRows(
         ? currentUserId
         : null,
   }));
+}
+
+function canManageReservationAsCreator(
+  reservation: Pick<Tables<"reservations">, "creator_id">,
+  currentUserId: string | null,
+) {
+  return Boolean(currentUserId && reservation.creator_id === currentUserId);
 }
 
 async function getCurrentUserId() {

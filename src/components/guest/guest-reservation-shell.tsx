@@ -8,6 +8,7 @@ import type { PublicEvent } from "@/app/actions/events";
 import type { EventScheduleSlot } from "@/app/actions/time-blocks";
 import { TimeSelectionGrid } from "@/components/calendar/time-selection-grid";
 import { Button } from "@/components/ui/button";
+import { CopyButton } from "@/components/ui/copy-button";
 import { Input } from "@/components/ui/input";
 import { formatTimeRange } from "@/lib/time/event-days";
 import { buildBufferTimeRanges } from "@/lib/time/ranges";
@@ -219,12 +220,18 @@ export function GuestReservationShell({
             <p className="mt-2 font-mono text-xl font-semibold text-emerald-950">
               {accessCode}
             </p>
-            <Link
-              className="mt-2 inline-block text-sm font-medium text-primary underline"
-              href={`/reservations/${accessCode}`}
-            >
-              예약 관리 화면 열기
-            </Link>
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <Link
+                className="text-sm font-medium text-primary underline"
+                href={`/reservations/${accessCode}`}
+              >
+                예약 관리 화면 열기
+              </Link>
+              <CopyButton
+                aria-label="예약 관리 코드 복사"
+                value={accessCode}
+              />
+            </div>
           </div>
         ) : null}
 

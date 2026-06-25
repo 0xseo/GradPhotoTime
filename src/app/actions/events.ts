@@ -11,7 +11,6 @@ import {
   requireDate,
   requireEventCode,
   requireInteger,
-  requireText,
   requireTime,
   requireUuid,
   requireTimeRanges,
@@ -205,7 +204,7 @@ export async function updateEventBufferSettings(
 }
 
 function parseCreateEventInput(input: CreateEventInput) {
-  const title = requireText(input.title, "title", 80);
+  const title = optionalText(input.title, 80) ?? "졸업사진 촬영";
   const description = optionalText(input.description, 1_000);
   const dateStart = requireDate(input.dateStart, "dateStart");
   const dateEnd = requireDate(input.dateEnd, "dateEnd");

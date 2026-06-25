@@ -7,6 +7,7 @@ import {
   getTimestampAtGridOffset,
   type TimeGridConfig,
 } from "@/lib/time/ranges";
+import { isTimestampInRanges } from "@/lib/time/range-set";
 import { useSelectionStore } from "@/store/use-selection-store";
 import type {
   TimeRange,
@@ -122,10 +123,21 @@ export function useTimeSelection({
         anchorTimestamp: timestamp,
         draftAvailability: draft.availability,
         draftRange: draft.range,
+        operation: isTimestampInRanges(timestamp, selectedRanges)
+          ? "remove"
+          : "add",
         pointerId: event.pointerId,
       });
     },
-    [beginSelection, config, getDraftFromPointer, gridRef, mode, setMode],
+    [
+      beginSelection,
+      config,
+      getDraftFromPointer,
+      gridRef,
+      mode,
+      selectedRanges,
+      setMode,
+    ],
   );
 
   const handlePointerMove = useCallback(

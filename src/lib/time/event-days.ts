@@ -45,6 +45,15 @@ export function getDayGridRange(date: string, startTime: string, endTime: string
 }
 
 export function toLocalIsoDateTime(date: string, time: string) {
+  if (time.startsWith("24:")) {
+    const nextDate = new Date(`${date}T00:00:00`);
+    nextDate.setDate(nextDate.getDate() + 1);
+
+    return new Date(
+      `${toDateOnly(nextDate)}T${normalizeTime("00:00")}`,
+    ).toISOString();
+  }
+
   return new Date(`${date}T${normalizeTime(time)}`).toISOString();
 }
 

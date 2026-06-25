@@ -2,8 +2,18 @@
 
 import { useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { KeyRound, Loader2, LogIn, UserPlus } from "lucide-react";
-import { signInWithPassword, signUpWithPassword } from "@/app/actions/auth";
+import {
+  CheckCircle2,
+  KeyRound,
+  Loader2,
+  LogIn,
+  UserPlus,
+} from "lucide-react";
+import {
+  sendPasswordResetEmail,
+  signInWithPassword,
+  signUpWithPassword,
+} from "@/app/actions/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -15,9 +25,20 @@ export function AuthForm() {
   const searchParams = useSearchParams();
   const redirectTo = searchParams.get("next") ?? "/";
   const [error, setError] = useState<string | null>(null);
+  const [email, setEmail] = useState("");
   const [mode, setMode] = useState<AuthMode>("sign-in");
   const [isPending, setIsPending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [password, setPassword] = useState("");
+  const [passwordConfirm, setPasswordConfirm] = useState("");
+  const passwordChecks = [
+    {
+      label: "8자 이상",
+      met: password.length >= 8,
+    },
+  ];
+  const isPasswordConfirmMet =
+    passwordConfirm.length > 0 && password === passwordConfirm;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -26,8 +47,6 @@ export function AuthForm() {
     setIsPending(true);
 
     const formData = new FormData(event.currentTarget);
-    const email = String(formData.get("email") ?? "");
-    const password = String(formData.get("password") ?? "");
     if (mode === "sign-up") {
       const result = await signUpWithPassword({
         email,
@@ -65,6 +84,26 @@ export function AuthForm() {
     router.refresh();
   }
 
+  async function handlePasswordReset() {
+    setError(null);
+    setNotice(null);
+    if (!email) {
+      setError("비밀번호를 재설정할 이메일을 입력해 주세요.");
+      return;
+    }
+
+    setIsPending(true);
+    const result = await sendPasswordResetEmail({ email });
+    setIsPending(false);
+
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+
+    setNotice(result.data.message);
+  }
+
   return (
     <div className="border border-border bg-muted p-5 sm:p-6">
       <div className="mb-5 grid grid-cols-2 gap-2">
@@ -96,29 +135,54 @@ export function AuthForm() {
           inputMode="email"
           label="이메일"
           name="email"
+          onChange={(event) => setEmail(event.target.value)}
           placeholder="name@example.com"
           required
           type="email"
+          value={email}
         />
         <Input
           autoComplete={mode === "sign-in" ? "current-password" : "new-password"}
           label="비밀번호"
           minLength={8}
           name="password"
+          onChange={(event) => setPassword(event.target.value)}
           placeholder="8자 이상"
           required
           type="password"
+          value={password}
         />
         {mode === "sign-up" ? (
-          <Input
-            autoComplete="new-password"
-            label="비밀번호 확인"
-            minLength={8}
-            name="passwordConfirm"
-            placeholder="다시 입력"
-            required
-            type="password"
-          />
+          <div className="space-y-2 rounded-md border border-border bg-background px-3 py-3">
+            {passwordChecks.map((check) => (
+              <PasswordCheck
+                key={check.label}
+                label={check.label}
+                met={check.met}
+              />
+            ))}
+          </div>
+        ) : null}
+        {mode === "sign-up" ? (
+          <>
+            <Input
+              autoComplete="new-password"
+              label="비밀번호 확인"
+              minLength={8}
+              name="passwordConfirm"
+              onChange={(event) => setPasswordConfirm(event.target.value)}
+              placeholder="다시 입력"
+              required
+              type="password"
+              value={passwordConfirm}
+            />
+            <div className="rounded-md border border-border bg-background px-3 py-3">
+              <PasswordCheck
+                label="비밀번호가 일치합니다"
+                met={isPasswordConfirmMet}
+              />
+            </div>
+          </>
         ) : null}
         <Button className="w-full" disabled={isPending} type="submit">
           {isPending ? (
@@ -128,6 +192,16 @@ export function AuthForm() {
           )}
           {mode === "sign-up" ? "가입 확인 메일 받기" : "로그인"}
         </Button>
+        {mode === "sign-in" ? (
+          <Button
+            className="w-full"
+            disabled={isPending}
+            onClick={handlePasswordReset}
+            variant="ghost"
+          >
+            비밀번호 재설정 메일 받기
+          </Button>
+        ) : null}
       </form>
 
       {notice ? (
@@ -140,6 +214,23 @@ export function AuthForm() {
           {error}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+function PasswordCheck({ label, met }: { label: string; met: boolean }) {
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-2 text-sm",
+        met ? "text-emerald-700" : "text-muted-foreground",
+      )}
+    >
+      <CheckCircle2
+        className={cn("size-4", met ? "opacity-100" : "opacity-35")}
+        aria-hidden="true"
+      />
+      <span>{label}</span>
     </div>
   );
 }

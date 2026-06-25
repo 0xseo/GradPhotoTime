@@ -22,8 +22,10 @@ import type { PublicEvent } from "@/app/actions/events";
 import type { EventScheduleSlot } from "@/app/actions/time-blocks";
 import { TimeSelectionGrid } from "@/components/calendar/time-selection-grid";
 import { Button } from "@/components/ui/button";
+import { CopyButton } from "@/components/ui/copy-button";
 import { Input } from "@/components/ui/input";
 import { formatTimeRange } from "@/lib/time/event-days";
+import { applyTimeBlockSelection } from "@/lib/time/range-set";
 import { buildBufferTimeRanges } from "@/lib/time/ranges";
 import { cn } from "@/lib/utils";
 import { useSelectionStore } from "@/store/use-selection-store";
@@ -102,20 +104,19 @@ export function HostDashboardShell({
     setIsPending(true);
 
     const result = await saveTimeBlocks({
-      blocks: [
-        ...timeBlocks.map((block) => ({
+      blocks: applyTimeBlockSelection(
+        timeBlocks.map((block) => ({
           endAt: block.end_at,
           note: block.note,
           startAt: block.start_at,
           type: block.type,
         })),
-        ...selectedRanges.map((range) => ({
+        selectedRanges.map((range) => ({
           endAt: range.endAt,
-          note: null,
           startAt: range.startAt,
-          type: blockType,
         })),
-      ],
+        blockType,
+      ),
       eventId: event.id,
     });
 
@@ -211,9 +212,24 @@ export function HostDashboardShell({
       <aside className="space-y-4 border border-border bg-muted p-4">
         <div>
           <p className="text-xs font-medium text-muted-foreground">공유 코드</p>
-          <p className="mt-1 font-mono text-2xl font-semibold text-primary">
-            {event.event_code}
-          </p>
+          <div className="mt-1 flex items-center justify-between gap-2">
+            <p className="font-mono text-2xl font-semibold text-primary">
+              {event.event_code}
+            </p>
+            <div className="flex items-center gap-1">
+              <CopyButton
+                aria-label="이벤트 코드 복사"
+                value={event.event_code}
+              />
+              <CopyButton
+                aria-label="이벤트 URL 복사"
+                getValue={() =>
+                  `${window.location.origin}/event/${event.event_code}`
+                }
+                icon="share"
+              />
+            </div>
+          </div>
         </div>
 
         <div className="space-y-3 border-t border-border pt-4">

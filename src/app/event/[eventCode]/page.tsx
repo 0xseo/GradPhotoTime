@@ -1,4 +1,5 @@
 import { CalendarShell } from "@/components/calendar/calendar-shell";
+import { ReservationCodeEntry } from "@/components/guest/event-code-entry";
 import { GuestReservationShell } from "@/components/guest/guest-reservation-shell";
 import { verifyEventCode } from "@/app/actions/events";
 import { listTimeBlocks } from "@/app/actions/time-blocks";
@@ -33,6 +34,9 @@ export default async function EventPage({ params }: EventPageProps) {
           {event.description}
         </p>
       ) : null}
+      <div className="mb-5 max-w-xl">
+        <ReservationCodeEntry />
+      </div>
       {scheduleResult.ok ? (
         <GuestReservationShell
           event={event}

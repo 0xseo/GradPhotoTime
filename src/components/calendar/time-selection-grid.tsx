@@ -45,7 +45,7 @@ export function TimeSelectionGrid({
   readOnly = false,
   reservationSlots = [],
   selectedRanges,
-  slotMinutes = 30,
+  slotMinutes = 10,
   timeBlocks = [],
 }: TimeSelectionGridProps) {
   const days = getEventDays(dateStart, dateEnd);
@@ -77,6 +77,7 @@ export function TimeSelectionGrid({
           date={days[0]?.date ?? dateStart}
           dailyEndTime={dailyEndTime}
           dailyStartTime={dailyStartTime}
+          slotMinutes={slotMinutes}
         />
         {days.map((day) => (
           <DaySelectionGrid
@@ -105,10 +106,12 @@ function TimeAxis({
   dailyEndTime,
   dailyStartTime,
   date,
+  slotMinutes,
 }: {
   dailyEndTime: string;
   dailyStartTime: string;
   date: string;
+  slotMinutes: number;
 }) {
   const { gridEndAt, gridStartAt } = getDayGridRange(
     date,
@@ -116,9 +119,18 @@ function TimeAxis({
     dailyEndTime,
   );
   const labels = getTimeLabels(gridStartAt, gridEndAt);
+  const rowCount = Math.max(
+    (new Date(gridEndAt).getTime() - new Date(gridStartAt).getTime()) /
+      (slotMinutes * 60_000),
+    1,
+  );
+  const height = `${Math.max(34, rowCount * 0.34)}rem`;
 
   return (
-    <div className="relative h-[34rem] border-r border-border bg-muted/70">
+    <div
+      className="relative border-r border-border bg-muted/70"
+      style={{ height }}
+    >
       {labels.map((label, index) => (
         <div
           className="absolute left-0 w-full -translate-y-1/2 px-2 text-xs text-muted-foreground"
@@ -182,12 +194,18 @@ function DaySelectionGrid({
       (slotMinutes * 60_000),
     1,
   );
+  const height = `${Math.max(34, rowCount * 0.34)}rem`;
+  const interactiveProps = readOnly ? undefined : gridProps;
 
   return (
     <div
-      className="relative h-[34rem] overflow-hidden border-r border-border bg-white last:border-r-0"
+      className="relative overflow-hidden border-r border-border bg-white last:border-r-0"
       ref={gridRef}
-      {...(readOnly ? {} : gridProps)}
+      {...(interactiveProps ?? {})}
+      style={{
+        height,
+        ...(interactiveProps?.style ?? {}),
+      }}
     >
       <div
         aria-hidden="true"
