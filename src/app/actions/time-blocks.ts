@@ -42,12 +42,14 @@ export async function listTimeBlocks(
 ): Promise<ActionResult<ListTimeBlocksData>> {
   try {
     const eventCode = input.eventCode;
-    const supabase = eventCode
-      ? createSupabaseAdminClient()
-      : await createSupabaseServerClient();
+    const supabase = createSupabaseAdminClient();
     const eventId = eventCode
       ? await getEventIdByCode(eventCode)
       : requireUuid(input.eventId, "eventId");
+
+    if (!eventCode) {
+      await assertCurrentUserIsEventHost(supabase, eventId);
+    }
 
     const { data: timeBlocks, error: timeBlocksError } = await supabase
       .from("time_blocks")
@@ -89,9 +91,10 @@ export async function saveTimeBlocks(
   input: SaveTimeBlocksInput,
 ): Promise<ActionResult<SaveTimeBlocksData>> {
   try {
-    const supabase = await createSupabaseServerClient();
+    const supabase = createSupabaseAdminClient();
     const eventId = requireUuid(input.eventId, "eventId");
     const blocks = parseTimeBlockDrafts(input.blocks);
+    await assertCurrentUserIsEventHost(supabase, eventId);
 
     const { data: event, error: eventError } = await supabase
       .from("events")
@@ -140,6 +143,32 @@ export async function saveTimeBlocks(
     return actionOk({ timeBlocks: data ?? [] });
   } catch (error) {
     return actionError(getErrorMessage(error));
+  }
+}
+
+async function assertCurrentUserIsEventHost(
+  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  eventId: string,
+) {
+  const serverSupabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+    error: userError,
+  } = await serverSupabase.auth.getUser();
+
+  if (userError || !user) {
+    throw new Error("로그인한 Host만 일정을 관리할 수 있습니다.");
+  }
+
+  const { data: event, error } = await supabase
+    .from("events")
+    .select("id")
+    .eq("id", eventId)
+    .eq("host_id", user.id)
+    .single();
+
+  if (error || !event) {
+    throw new Error("이 이벤트의 Host만 일정을 관리할 수 있습니다.");
   }
 }
 

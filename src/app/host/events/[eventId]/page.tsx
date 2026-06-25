@@ -2,6 +2,7 @@ import { CalendarShell } from "@/components/calendar/calendar-shell";
 import { HostDashboardShell } from "@/components/host/host-dashboard-shell";
 import { listEventReservations } from "@/app/actions/reservations";
 import { listTimeBlocks } from "@/app/actions/time-blocks";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type HostEventPageProps = {
@@ -13,15 +14,20 @@ type HostEventPageProps = {
 export default async function HostEventPage({ params }: HostEventPageProps) {
   const { eventId } = await params;
   const supabase = await createSupabaseServerClient();
-  const { data: event, error } = await supabase
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  const admin = createSupabaseAdminClient();
+  const { data: event, error } = await admin
     .from("events")
     .select(
-      "id,event_code,title,description,date_start,date_end,daily_start_time,daily_end_time,timezone,buffer_time_minutes,is_buffer_active",
+      "id,event_code,host_id,title,description,date_start,date_end,daily_start_time,daily_end_time,timezone,buffer_time_minutes,is_buffer_active",
     )
     .eq("id", eventId)
+    .eq("host_id", user?.id ?? "")
     .single();
 
-  if (error || !event) {
+  if (!user || error || !event) {
     return (
       <CalendarShell eyebrow="Host" title="이벤트를 열 수 없습니다">
         <p className="rounded-md border border-border bg-muted p-4 text-sm text-muted-foreground">

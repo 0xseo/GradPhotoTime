@@ -14,7 +14,9 @@ import {
   requireText,
   requireTime,
   requireUuid,
+  requireTimeRanges,
 } from "@/lib/validators/action-inputs";
+import type { TimeRange } from "@/types/domain";
 
 export type PublicEvent = Pick<
   Tables<"events">,
@@ -38,6 +40,7 @@ export type CreateEventInput = {
   dateEnd: string;
   dateStart: string;
   description?: string | null;
+  initialAvailableBlocks?: TimeRange[];
   isBufferActive?: boolean;
   timezone?: string;
   title: string;
@@ -62,7 +65,8 @@ export async function createEvent(
     }
 
     const payload = parseCreateEventInput(input);
-    const { data, error } = await supabase
+    const admin = createSupabaseAdminClient();
+    const { data, error } = await admin
       .from("events")
       .insert({
         buffer_time_minutes: payload.bufferTimeMinutes,
@@ -83,6 +87,23 @@ export async function createEvent(
 
     if (error) {
       return actionError(error.message);
+    }
+
+    if (payload.initialAvailableBlocks.length > 0) {
+      const { error: blocksError } = await admin.from("time_blocks").insert(
+        payload.initialAvailableBlocks.map((block) => ({
+          end_at: block.endAt,
+          event_id: data.id,
+          note: null,
+          start_at: block.startAt,
+          type: "AVAILABLE",
+        })),
+      );
+
+      if (blocksError) {
+        await admin.from("events").delete().eq("id", data.id);
+        return actionError(blocksError.message);
+      }
     }
 
     revalidatePath("/");
@@ -139,6 +160,15 @@ export async function updateEventBufferSettings(
 ): Promise<ActionResult<UpdateEventBufferData>> {
   try {
     const supabase = await createSupabaseServerClient();
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      return actionError("로그인한 Host만 버퍼 설정을 저장할 수 있습니다.");
+    }
+
     const eventId = requireUuid(input.eventId, "eventId");
     const bufferTimeMinutes = requireInteger(
       input.bufferTimeMinutes,
@@ -147,13 +177,15 @@ export async function updateEventBufferSettings(
       180,
     );
     const isBufferActive = optionalBoolean(input.isBufferActive, false);
-    const { data, error } = await supabase
+    const admin = createSupabaseAdminClient();
+    const { data, error } = await admin
       .from("events")
       .update({
         buffer_time_minutes: bufferTimeMinutes,
         is_buffer_active: isBufferActive,
       })
       .eq("id", eventId)
+      .eq("host_id", user.id)
       .select(
         "id,event_code,title,description,date_start,date_end,daily_start_time,daily_end_time,timezone,buffer_time_minutes,is_buffer_active",
       )
@@ -187,6 +219,9 @@ function parseCreateEventInput(input: CreateEventInput) {
     180,
   );
   const isBufferActive = optionalBoolean(input.isBufferActive, false);
+  const initialAvailableBlocks = input.initialAvailableBlocks
+    ? requireTimeRanges(input.initialAvailableBlocks, "initialAvailableBlocks")
+    : [];
 
   if (new Date(dateStart).getTime() > new Date(dateEnd).getTime()) {
     throw new Error("dateStart must be earlier than or equal to dateEnd.");
@@ -203,6 +238,7 @@ function parseCreateEventInput(input: CreateEventInput) {
     dateEnd,
     dateStart,
     description,
+    initialAvailableBlocks,
     isBufferActive,
     timezone,
     title,

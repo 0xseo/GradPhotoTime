@@ -87,6 +87,16 @@ export function requireEmail(value: unknown) {
   return textValue;
 }
 
+export function requirePassword(value: unknown) {
+  const textValue = requireText(value, "password", 128);
+
+  if (textValue.length < 8) {
+    throw new Error("password must be at least 8 characters.");
+  }
+
+  return textValue;
+}
+
 export function requireInteger(
   value: unknown,
   fieldName: string,
