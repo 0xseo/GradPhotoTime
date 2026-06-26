@@ -154,21 +154,49 @@ export function subtractTimeRange(range: TimeRange, removal: TimeRange) {
 }
 
 function mergeSelectedTimeRanges(ranges: SelectedTimeRange[]) {
-  return (["available", "waitlist", "blocked"] as TimeRangeAvailability[])
-    .flatMap((availability) =>
-      mergeTimeRanges(
-        ranges
-          .filter((range) => range.availability === availability)
-          .map((range) => ({
-            endAt: range.endAt,
-            startAt: range.startAt,
-          })),
-      ).map((range) => createSelectedTimeRange(range, availability)),
-    )
-    .sort(
-      (left, right) =>
-        new Date(left.startAt).getTime() - new Date(right.startAt).getTime(),
+  return ranges.reduce<SelectedTimeRange[]>((mergedRanges, range) => {
+    const mergeIndex = mergedRanges.findIndex(
+      (mergedRange) =>
+        mergedRange.availability === range.availability &&
+        rangesTouchOrOverlap(mergedRange, range),
     );
+
+    if (mergeIndex === -1) {
+      return [...mergedRanges, range];
+    }
+
+    return mergedRanges.map((mergedRange, index) => {
+      if (index !== mergeIndex) {
+        return mergedRange;
+      }
+
+      const startAt =
+        new Date(range.startAt).getTime() <
+        new Date(mergedRange.startAt).getTime()
+          ? range.startAt
+          : mergedRange.startAt;
+      const endAt =
+        new Date(range.endAt).getTime() >
+        new Date(mergedRange.endAt).getTime()
+          ? range.endAt
+          : mergedRange.endAt;
+
+      return createSelectedTimeRange(
+        {
+          endAt,
+          startAt,
+        },
+        mergedRange.availability,
+      );
+    });
+  }, []);
+}
+
+function rangesTouchOrOverlap(left: TimeRange, right: TimeRange) {
+  return (
+    new Date(left.startAt).getTime() <= new Date(right.endAt).getTime() &&
+    new Date(right.startAt).getTime() <= new Date(left.endAt).getTime()
+  );
 }
 
 function mergeTimeBlockRanges(blocks: TimeBlockRangeDraft[]) {

@@ -81,6 +81,26 @@ describe("selected time range updates", () => {
       ],
     );
   });
+
+  it("keeps existing priority order when adding an earlier non-overlapping range", () => {
+    const selectedRanges = [
+      {
+        ...range(13, 0, 14, 0),
+        availability: "available",
+        id: "first-choice",
+      },
+    ];
+
+    assert.deepEqual(
+      applySelectedTimeRange(
+        selectedRanges,
+        range(9, 0, 10, 0),
+        "available",
+        "add",
+      ).map(({ endAt, startAt }) => ({ endAt, startAt })),
+      [range(13, 0, 14, 0), range(9, 0, 10, 0)],
+    );
+  });
 });
 
 describe("time block selection updates", () => {

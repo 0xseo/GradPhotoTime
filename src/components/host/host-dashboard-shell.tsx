@@ -1,27 +1,23 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  CalendarDays,
   Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
-  Clock,
   Eye,
   EyeOff,
   Loader2,
   SlidersHorizontal,
-  Trash2,
   Users,
   X,
 } from "lucide-react";
 import {
   toggleEventBufferOverride,
   updateEventBufferSettings,
-  updateEventDateRange,
   type EventBufferOverride,
   type EventBufferSide,
 } from "@/app/actions/events";
@@ -38,8 +34,12 @@ import {
   type CalendarBufferItem,
 } from "@/components/calendar/time-selection-grid";
 import { Button } from "@/components/ui/button";
-import { CopyButton } from "@/components/ui/copy-button";
 import { Input } from "@/components/ui/input";
+import { getSlotDisplayRange } from "@/lib/reservations/slots";
+import {
+  formatCompactDateWithWeekday,
+  getWeekdayTextClass,
+} from "@/lib/time/calendar-style";
 import { formatTimeRange } from "@/lib/time/event-days";
 import {
   applyAvailabilityToggleSelection,
@@ -72,40 +72,62 @@ export function HostDashboardShell({
   timeBlocks,
 }: HostDashboardShellProps) {
   const router = useRouter();
+  const autoSaveInFlightRef = useRef(false);
+  const autoSaveSelectionKeyRef = useRef<string | null>(null);
   const [bufferMinutes, setBufferMinutes] = useState(event.buffer_time_minutes);
-  const [, setBufferToggleKey] = useState<string | null>(null);
-  const [activeDateDrafts, setActiveDateDrafts] = useState(activeDates);
+  const [bufferToggleKey, setBufferToggleKey] = useState<string | null>(null);
+  const [optimisticTimeBlocks, setOptimisticTimeBlocks] = useState<
+    Tables<"time_blocks">[] | null
+  >(null);
+  const effectiveTimeBlocks = optimisticTimeBlocks ?? timeBlocks;
+  const defaultVisibleWeekStart = useMemo(
+    () => getWeekStartDate(activeDates[0] ?? event.date_start),
+    [activeDates, event.date_start]
+  );
   const [collapsedReservationIds, setCollapsedReservationIds] = useState<
     Set<string>
   >(() => new Set());
   const [hiddenPendingReservationIds, setHiddenPendingReservationIds] =
     useState<Set<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
-  const [focusedReservationId, setFocusedReservationId] = useState<string | null>(
-    null,
-  );
-  const [hoveredReservationId, setHoveredReservationId] = useState<string | null>(
-    null,
-  );
+  const [focusedReservationId, setFocusedReservationId] = useState<
+    string | null
+  >(null);
+  const [hoveredReservationId, setHoveredReservationId] = useState<
+    string | null
+  >(null);
   const [isBufferAfterActive, setIsBufferAfterActive] = useState(
-    event.is_buffer_after_active,
+    event.is_buffer_after_active
   );
   const [isBufferBeforeActive, setIsBufferBeforeActive] = useState(
-    event.is_buffer_before_active,
+    event.is_buffer_before_active
   );
   const [isBufferDialogOpen, setIsBufferDialogOpen] = useState(false);
   const [isBufferSectionOpen, setIsBufferSectionOpen] = useState(false);
   const [isBufferPending, setIsBufferPending] = useState(false);
-  const [isDateDialogOpen, setIsDateDialogOpen] = useState(false);
-  const [isDatePending, setIsDatePending] = useState(false);
   const [isPending, setIsPending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [previewApprovalSlotId, setPreviewApprovalSlotId] = useState<
+    string | null
+  >(null);
+  const [previewApprovalReservationId, setPreviewApprovalReservationId] =
+    useState<string | null>(null);
   const [reviewingKey, setReviewingKey] = useState<string | null>(null);
+  const [visibleWeekStart, setVisibleWeekStart] = useState<string | null>(
+    defaultVisibleWeekStart
+  );
+  const effectiveVisibleWeekStart =
+    visibleWeekStart &&
+    activeDates.some(
+      (activeDate) => getWeekStartDate(activeDate) === visibleWeekStart
+    )
+      ? visibleWeekStart
+      : defaultVisibleWeekStart;
   const clearSelection = useSelectionStore((state) => state.clearSelection);
   const selectedRanges = useSelectionStore((state) => state.selectedRanges);
   const confirmedSlots = useMemo(
     () => reservationSlots.filter((slot) => slot.is_confirmed),
-    [reservationSlots],
+    [reservationSlots]
   );
   const bufferOverrideByKey = useMemo(
     () =>
@@ -113,26 +135,26 @@ export function HostDashboardShell({
         bufferOverrides.map((override) => [
           getBufferOverrideKey(
             override.reservation_slot_id,
-            override.side as EventBufferSide,
+            override.side as EventBufferSide
           ),
           override,
-        ]),
+        ])
       ),
-    [bufferOverrides],
+    [bufferOverrides]
   );
+
   const configuredBufferItems = useMemo(
     () =>
       buildBufferTimeRangeItems(
         confirmedSlots.map((slot) => ({
-          endAt: slot.end_at,
+          ...getSlotDisplayRange(slot),
           id: slot.id,
-          startAt: slot.start_at,
         })),
         event.buffer_time_minutes,
         {
           afterActive: true,
           beforeActive: true,
-        },
+        }
       ).map((item) => {
         const override = bufferOverrideByKey.get(item.id);
         const globallyActive =
@@ -148,7 +170,7 @@ export function HostDashboardShell({
           isActive,
           override,
           slot: confirmedSlots.find(
-            (confirmedSlot) => confirmedSlot.id === item.reservationSlotId,
+            (confirmedSlot) => confirmedSlot.id === item.reservationSlotId
           ),
           startAt: override?.custom_start_at ?? item.startAt,
         };
@@ -160,100 +182,143 @@ export function HostDashboardShell({
       event.is_buffer_active,
       event.is_buffer_after_active,
       event.is_buffer_before_active,
-    ],
+    ]
   );
   const bufferItems = useMemo(
     () => configuredBufferItems.filter((item) => item.isActive),
-    [configuredBufferItems],
+    [configuredBufferItems]
   );
   const bufferRanges = useMemo<TimeRange[]>(
     () => bufferItems.map(({ endAt, startAt }) => ({ endAt, startAt })),
-    [bufferItems],
+    [bufferItems]
   );
   const confirmedReservationIds = useMemo(
     () =>
       new Set(
         reservationSlots
           .filter((slot) => slot.is_confirmed)
-          .map((slot) => slot.reservation_id),
+          .map((slot) => slot.reservation_id)
       ),
-    [reservationSlots],
+    [reservationSlots]
   );
-  const activeFocusedReservationId = focusedReservationId ?? hoveredReservationId;
-  const visibleReservationSlots = useMemo(
-    () => {
-      if (activeFocusedReservationId) {
-        return reservationSlots.filter(
-          (slot) =>
-            slot.is_confirmed ||
-            slot.reservation_id === activeFocusedReservationId,
+  const activeFocusedReservationId =
+    focusedReservationId ?? hoveredReservationId ?? previewApprovalReservationId;
+  const visibleReservationSlots = useMemo(() => {
+    if (activeFocusedReservationId) {
+      const confirmedSlotsToDisplay = reservationSlots.filter(
+        (slot) => slot.is_confirmed
+      );
+      const focusedCandidateSlots = reservationSlots
+        .filter((slot) => slot.reservation_id === activeFocusedReservationId)
+        .map((slot) =>
+          slot.is_confirmed
+            ? {
+                ...slot,
+                id: `${slot.id}:pending-overlay`,
+                is_confirmed: false,
+              }
+            : slot
         );
+
+      return [...confirmedSlotsToDisplay, ...focusedCandidateSlots];
+    }
+
+    return reservationSlots.filter((slot) => {
+      if (slot.is_confirmed) {
+        return true;
       }
 
-      return reservationSlots.filter((slot) => {
-        if (slot.is_confirmed) {
-          return true;
-        }
+      if (confirmedReservationIds.has(slot.reservation_id)) {
+        return false;
+      }
 
-        if (confirmedReservationIds.has(slot.reservation_id)) {
-          return false;
-        }
-
-        return !hiddenPendingReservationIds.has(slot.reservation_id);
-      });
-    },
-    [
-      activeFocusedReservationId,
-      confirmedReservationIds,
-      hiddenPendingReservationIds,
-      reservationSlots,
-    ],
-  );
+      return !hiddenPendingReservationIds.has(slot.reservation_id);
+    });
+  }, [
+    activeFocusedReservationId,
+    confirmedReservationIds,
+    hiddenPendingReservationIds,
+    reservationSlots,
+  ]);
   const occupiedRanges = useMemo<TimeRange[]>(
-    () =>
-      reservationSlots.map((slot) => ({
-        endAt: slot.end_at,
-        startAt: slot.start_at,
-      })),
-    [reservationSlots],
+    () => reservationSlots.map((slot) => getSlotDisplayRange(slot)),
+    [reservationSlots]
   );
 
   useEffect(() => {
     clearSelection();
   }, [clearSelection, event.id]);
 
-  async function handleSave() {
-    setError(null);
-    setNotice(null);
-    setIsPending(true);
-
-    const result = await saveTimeBlocks({
-      blocks: applyAvailabilityToggleSelection(
-        timeBlocks.map((block) => ({
-          endAt: block.end_at,
-          note: block.note,
-          startAt: block.start_at,
-          type: block.type,
-        })),
-        selectedRanges.map((range) => ({
-          endAt: range.endAt,
-          startAt: range.startAt,
-        })),
-      ),
-      eventId: event.id,
-    });
-
-    setIsPending(false);
-
-    if (!result.ok) {
-      setError(result.error);
+  useEffect(() => {
+    if (selectedRanges.length === 0) {
+      autoSaveSelectionKeyRef.current = null;
       return;
     }
 
-    clearSelection();
-    setNotice("시간 블록을 저장했습니다.");
-    router.refresh();
-  }
+    const selectionKey = selectedRanges
+      .map((range) => `${range.startAt}:${range.endAt}`)
+      .join("|");
+
+    if (
+      autoSaveInFlightRef.current ||
+      autoSaveSelectionKeyRef.current === selectionKey
+    ) {
+      return;
+    }
+
+    let isCancelled = false;
+    autoSaveInFlightRef.current = true;
+    autoSaveSelectionKeyRef.current = selectionKey;
+
+    async function saveSelection() {
+      setError(null);
+      setNotice("변경 사항을 저장하고 있습니다.");
+      setIsPending(true);
+
+      const result = await saveTimeBlocks({
+        blocks: applyAvailabilityToggleSelection(
+          effectiveTimeBlocks.map((block) => ({
+            endAt: block.end_at,
+            note: block.note,
+            startAt: block.start_at,
+            type: block.type,
+          })),
+          selectedRanges.map((range) => ({
+            endAt: range.endAt,
+            startAt: range.startAt,
+          }))
+        ),
+        eventId: event.id,
+      });
+
+      if (isCancelled) {
+        return;
+      }
+
+      autoSaveInFlightRef.current = false;
+
+      if (!result.ok) {
+        setError(result.error);
+        setNotice(null);
+        setIsPending(false);
+        return;
+      }
+
+      setOptimisticTimeBlocks(result.data.timeBlocks);
+      clearSelection();
+      autoSaveSelectionKeyRef.current = null;
+      setNotice("가능 시간을 저장했습니다.");
+      setIsPending(false);
+      router.refresh();
+    }
+
+    void saveSelection();
+
+    return () => {
+      isCancelled = true;
+      autoSaveInFlightRef.current = false;
+    };
+  }, [clearSelection, effectiveTimeBlocks, event.id, router, selectedRanges]);
 
   async function handleBufferSave() {
     setError(null);
@@ -280,35 +345,13 @@ export function HostDashboardShell({
     router.refresh();
   }
 
-  async function handleDateSave() {
-    setError(null);
-    setNotice(null);
-    setIsDatePending(true);
-
-    const result = await updateEventDateRange({
-      activeDates: activeDateDrafts,
-      eventId: event.id,
-    });
-
-    setIsDatePending(false);
-
-    if (!result.ok) {
-      setError(result.error);
-      return;
-    }
-
-    setNotice("날짜 범위를 저장했습니다.");
-    setIsDateDialogOpen(false);
-    router.refresh();
-  }
-
   async function handleAddBuffer(
     slot: EventScheduleSlot,
-    side: EventBufferSide,
+    side: EventBufferSide
   ) {
     const item = configuredBufferItems.find(
       (bufferItem) =>
-        bufferItem.reservationSlotId === slot.id && bufferItem.side === side,
+        bufferItem.reservationSlotId === slot.id && bufferItem.side === side
     );
 
     if (!item) {
@@ -362,14 +405,28 @@ export function HostDashboardShell({
     router.refresh();
   }
 
-  async function handleResizeBuffer(item: CalendarBufferItem, range: TimeRange) {
+  async function handleResizeBuffer(
+    item: CalendarBufferItem,
+    range: TimeRange
+  ) {
+    const confirmedSlot = confirmedSlots.find(
+      (slot) => slot.id === item.reservationSlotId
+    );
+    const safeRange = confirmedSlot
+      ? clampBufferRangeToConfirmedSlot(
+          range,
+          getSlotDisplayRange(confirmedSlot),
+          item.side
+        )
+      : range;
+
     setError(null);
     setNotice(null);
     setBufferToggleKey(item.id);
 
     const result = await toggleEventBufferOverride({
-      customEndAt: range.endAt,
-      customStartAt: range.startAt,
+      customEndAt: safeRange.endAt,
+      customStartAt: safeRange.startAt,
       eventId: event.id,
       isActive: true,
       reservationSlotId: item.reservationSlotId,
@@ -389,16 +446,16 @@ export function HostDashboardShell({
 
   async function handleResizeConfirmedSlot(
     slot: EventScheduleSlot,
-    range: TimeRange,
+    range: TimeRange
   ) {
-    const currentStart = new Date(slot.start_at).getTime();
-    const currentEnd = new Date(slot.end_at).getTime();
+    const candidateStart = new Date(slot.start_at).getTime();
+    const candidateEnd = new Date(slot.end_at).getTime();
     const nextStart = new Date(range.startAt).getTime();
     const nextEnd = new Date(range.endAt).getTime();
 
     if (
-      (nextStart < currentStart || nextEnd > currentEnd) &&
-      !window.confirm("기존 펜딩 시간대보다 크게 확정됩니다. 계속할까요?")
+      (nextStart < candidateStart || nextEnd > candidateEnd) &&
+      !window.confirm("기존 후보 시간보다 크게 확정됩니다. 계속할까요?")
     ) {
       return;
     }
@@ -423,7 +480,7 @@ export function HostDashboardShell({
 
   async function handleResizeTimeBlock(
     block: Tables<"time_blocks">,
-    range: TimeRange,
+    range: TimeRange
   ) {
     setError(null);
     setNotice(null);
@@ -431,7 +488,7 @@ export function HostDashboardShell({
 
     const result = await saveTimeBlocks({
       blocks: applyTimeBlockSelection(
-        timeBlocks
+        effectiveTimeBlocks
           .filter((timeBlock) => timeBlock.id !== block.id)
           .map((timeBlock) => ({
             endAt: timeBlock.end_at,
@@ -440,7 +497,7 @@ export function HostDashboardShell({
             type: timeBlock.type,
           })),
         [range],
-        "AVAILABLE",
+        "AVAILABLE"
       ),
       eventId: event.id,
     });
@@ -452,6 +509,7 @@ export function HostDashboardShell({
       return;
     }
 
+    setOptimisticTimeBlocks(result.data.timeBlocks);
     setNotice("가능 시간 크기를 조정했습니다.");
     router.refresh();
   }
@@ -459,14 +517,12 @@ export function HostDashboardShell({
   async function handleReviewReservation(input: {
     confirmedSlotId?: string | null;
     reservationId: string;
-    status: Extract<ReservationStatus, "APPROVED" | "PENDING" | "REJECTED">;
+    status: Extract<ReservationStatus, "APPROVED" | "PENDING">;
   }) {
     const actionKey =
       input.status === "APPROVED"
         ? `${input.reservationId}:${input.confirmedSlotId}:APPROVED`
-        : input.status === "PENDING"
-          ? `${input.reservationId}:${input.confirmedSlotId}:PENDING`
-          : `${input.reservationId}:REJECTED`;
+        : `${input.reservationId}:${input.confirmedSlotId}:PENDING`;
 
     setError(null);
     setNotice(null);
@@ -488,6 +544,8 @@ export function HostDashboardShell({
       setNotice("예약을 승인했습니다.");
       setFocusedReservationId(null);
       setHoveredReservationId(null);
+      setPreviewApprovalReservationId(null);
+      setPreviewApprovalSlotId(null);
       setHiddenPendingReservationIds((current) => {
         const next = new Set(current);
         next.delete(input.reservationId);
@@ -495,8 +553,6 @@ export function HostDashboardShell({
       });
     } else if (input.status === "PENDING") {
       setNotice("확정을 취소하고 대기 상태로 돌렸습니다.");
-    } else {
-      setNotice("예약을 거절했습니다.");
     }
     router.refresh();
   }
@@ -513,16 +569,6 @@ export function HostDashboardShell({
     setIsBufferAfterActive(event.is_buffer_after_active);
     setIsBufferBeforeActive(event.is_buffer_before_active);
     setIsBufferDialogOpen(false);
-  }
-
-  function openDateDialog() {
-    setActiveDateDrafts(activeDates);
-    setIsDateDialogOpen(true);
-  }
-
-  function closeDateDialog() {
-    setActiveDateDrafts(activeDates);
-    setIsDateDialogOpen(false);
   }
 
   function togglePendingHidden(reservationId: string) {
@@ -556,92 +602,61 @@ export function HostDashboardShell({
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
       <div className="min-h-96 bg-background">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-primary">
-            <Clock className="size-5" aria-hidden="true" />
-            <h2 className="font-serif text-2xl font-semibold">가능 시간</h2>
-          </div>
-          <Button
-            onClick={openDateDialog}
-            size="sm"
-            variant="outline"
-          >
-            <CalendarDays className="size-4" aria-hidden="true" />
-            날짜 수정
-          </Button>
-        </div>
-        <div className="mt-4">
-          <TimeSelectionGrid
-            activeDates={activeDates}
-            bufferItems={bufferItems}
-            blockedRanges={bufferRanges}
-            bufferRanges={bufferRanges}
-            dailyEndTime={event.daily_end_time}
-            dailyStartTime={event.daily_start_time}
-            dateEnd={event.date_end}
-            dateStart={event.date_start}
-            mode="host-availability"
-            onAddBuffer={handleAddBuffer}
-            onApproveSlot={(slot) =>
-              handleReviewReservation({
-                confirmedSlotId: slot.id,
-                reservationId: slot.reservation_id,
-                status: "APPROVED",
-              })
-            }
-            onCancelSlot={(slot) =>
-              handleReviewReservation({
-                confirmedSlotId: slot.id,
-                reservationId: slot.reservation_id,
-                status: "PENDING",
-              })
-            }
-            onPinReservationPending={(reservationId) => {
-              setFocusedReservationId((current) =>
-                current === reservationId ? null : reservationId,
-              );
-              setHoveredReservationId(null);
-            }}
-            onPreviewReservationPending={setHoveredReservationId}
-            onRejectReservation={(reservationId) =>
-              handleReviewReservation({
-                reservationId,
-                status: "REJECTED",
-              })
-            }
-            onRemoveBuffer={handleRemoveBuffer}
-            onResizeBuffer={handleResizeBuffer}
-            onResizeSlot={handleResizeConfirmedSlot}
-            onResizeTimeBlock={handleResizeTimeBlock}
-            occupiedRanges={occupiedRanges}
-            reservationSlots={visibleReservationSlots}
-            selectedRanges={selectedRanges}
-            timeBlocks={timeBlocks}
-          />
-        </div>
+        <TimeSelectionGrid
+          activeDates={activeDates}
+          bufferItems={bufferItems}
+          blockedRanges={bufferRanges}
+          bufferRanges={bufferRanges}
+          dailyEndTime={event.daily_end_time}
+          dailyStartTime={event.daily_start_time}
+          dateEnd={event.date_end}
+          dateStart={event.date_start}
+          mode="host-availability"
+          onAddBuffer={handleAddBuffer}
+          onApproveSlot={(slot) =>
+            handleReviewReservation({
+              confirmedSlotId: slot.id,
+              reservationId: slot.reservation_id,
+              status: "APPROVED",
+            })
+          }
+          onCancelSlot={(slot) =>
+            handleReviewReservation({
+              confirmedSlotId: slot.id,
+              reservationId: slot.reservation_id,
+              status: "PENDING",
+            })
+          }
+          onPinReservationPending={(reservationId) => {
+            setFocusedReservationId((current) =>
+              current === reservationId ? null : reservationId
+            );
+            setHoveredReservationId(null);
+          }}
+          onPreviewReservationPending={setHoveredReservationId}
+          onRemoveBuffer={handleRemoveBuffer}
+          onResizeBuffer={handleResizeBuffer}
+          onResizeSlot={handleResizeConfirmedSlot}
+          onResizeTimeBlock={handleResizeTimeBlock}
+          occupiedRanges={occupiedRanges}
+          readOnly={isPending}
+          reservationSlots={visibleReservationSlots}
+          selectedRanges={selectedRanges}
+          timeBlocks={effectiveTimeBlocks}
+          bufferTimeMinutes={event.buffer_time_minutes}
+          pendingBufferActionKey={bufferToggleKey}
+          previewApprovalSlotId={previewApprovalSlotId}
+          visibleWeekStart={effectiveVisibleWeekStart}
+          onVisibleWeekStartChange={setVisibleWeekStart}
+        />
       </div>
       <aside className="space-y-4 border border-border bg-muted p-4">
-        <div>
-          <p className="text-xs font-medium text-muted-foreground">공유 코드</p>
-          <div className="mt-1 flex items-center justify-between gap-2">
-            <p className="font-mono text-2xl font-semibold text-primary">
-              {event.event_code}
-            </p>
-            <div className="flex items-center gap-1">
-              <CopyButton
-                aria-label="이벤트 코드 복사"
-                value={event.event_code}
-              />
-              <CopyButton
-                aria-label="이벤트 URL 복사"
-                getValue={() =>
-                  `${window.location.origin}/event/${event.event_code}`
-                }
-                icon="share"
-              />
-            </div>
-          </div>
-        </div>
+        <EventWeekMiniCalendar
+          activeDates={activeDates}
+          key={effectiveVisibleWeekStart}
+          selectedWeekStart={effectiveVisibleWeekStart}
+          onWeekStartChange={setVisibleWeekStart}
+        />
 
         <div className="space-y-3 border-t border-border pt-4">
           <button
@@ -684,7 +699,11 @@ export function HostDashboardShell({
                   </p>
                 </div>
               </div>
-              <Button className="w-full" onClick={openBufferDialog} variant="outline">
+              <Button
+                className="w-full"
+                onClick={openBufferDialog}
+                variant="outline"
+              >
                 <SlidersHorizontal className="size-4" aria-hidden="true" />
                 설정 수정
               </Button>
@@ -692,28 +711,15 @@ export function HostDashboardShell({
           ) : null}
         </div>
 
-        <Button
-          className="w-full"
-          disabled={isPending || selectedRanges.length === 0}
-          onClick={handleSave}
-        >
-          {isPending ? (
-            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-          ) : (
-            <Check className="size-4" aria-hidden="true" />
-          )}
-          선택 적용
-        </Button>
-
-        <Button
-          className="w-full"
-          disabled={selectedRanges.length === 0}
-          onClick={clearSelection}
-          variant="outline"
-        >
-          <Trash2 className="size-4" aria-hidden="true" />
-          선택 초기화
-        </Button>
+        {isPending ? (
+          <p className="flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm text-muted-foreground">
+            <Loader2
+              className="size-4 animate-spin text-primary"
+              aria-hidden="true"
+            />
+            드래그 변경사항 저장 중
+          </p>
+        ) : null}
 
         {notice ? (
           <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
@@ -725,22 +731,6 @@ export function HostDashboardShell({
             {error}
           </p>
         ) : null}
-
-        <div className="space-y-2">
-          <p className="text-sm font-medium text-foreground">
-            새 선택 {selectedRanges.length}개
-          </p>
-          <div className="max-h-40 space-y-2 overflow-auto">
-            {selectedRanges.map((range) => (
-              <div
-                className="rounded-md border border-border bg-background px-3 py-2 text-xs"
-                key={range.id}
-              >
-                {formatTimeRange(range)}
-              </div>
-            ))}
-          </div>
-        </div>
 
         <div className="space-y-3 border-t border-border pt-4">
           <div className="flex items-center justify-between gap-3 text-primary">
@@ -763,25 +753,31 @@ export function HostDashboardShell({
           </div>
           <div className="max-h-[32rem] overflow-auto">
             {reservations.length > 0 ? (
-              <div className="divide-y divide-border">
+              <div className="space-y-2">
                 {reservations.map((reservation) => (
                   <ReservationReviewItem
                     collapsed={collapsedReservationIds.has(reservation.id)}
                     focused={focusedReservationId === reservation.id}
                     hasConfirmed={confirmedReservationIds.has(reservation.id)}
-                    hiddenPending={hiddenPendingReservationIds.has(reservation.id)}
+                    hiddenPending={hiddenPendingReservationIds.has(
+                      reservation.id
+                    )}
                     key={reservation.id}
                     onCollapseToggle={() =>
                       toggleReservationCollapsed(reservation.id)
                     }
                     onFocus={() => {
                       setFocusedReservationId((current) =>
-                        current === reservation.id ? null : reservation.id,
+                        current === reservation.id ? null : reservation.id
                       );
                       setHoveredReservationId(null);
                     }}
                     onHideToggle={() => togglePendingHidden(reservation.id)}
                     onReview={handleReviewReservation}
+                    onSlotHover={(slotId, reservationId) => {
+                      setPreviewApprovalSlotId(slotId);
+                      setPreviewApprovalReservationId(reservationId ?? null);
+                    }}
                     reservation={reservation}
                     reviewingKey={reviewingKey}
                   />
@@ -795,16 +791,6 @@ export function HostDashboardShell({
           </div>
         </div>
       </aside>
-      {isDateDialogOpen ? (
-        <DateRangeDialog
-          activeDates={activeDateDrafts}
-          dateStart={event.date_start}
-          isPending={isDatePending}
-          onChange={setActiveDateDrafts}
-          onClose={closeDateDialog}
-          onSave={handleDateSave}
-        />
-      ) : null}
       {isBufferDialogOpen ? (
         <BufferSettingsDialog
           bufferMinutes={bufferMinutes}
@@ -822,6 +808,115 @@ export function HostDashboardShell({
   );
 }
 
+function EventWeekMiniCalendar({
+  activeDates,
+  selectedWeekStart,
+  onWeekStartChange,
+}: {
+  activeDates: string[];
+  selectedWeekStart: string;
+  onWeekStartChange: (weekStartDate: string) => void;
+}) {
+  const [monthDate, setMonthDate] = useState(() =>
+    parseDateOnly(selectedWeekStart)
+  );
+  const activeDateSet = useMemo(() => new Set(activeDates), [activeDates]);
+  const selectedWeekDateSet = useMemo(
+    () =>
+      new Set(buildDateList(selectedWeekStart, addDays(selectedWeekStart, 6))),
+    [selectedWeekStart]
+  );
+  const days = useMemo(() => buildMonthDays(monthDate), [monthDate]);
+  const monthLabel = new Intl.DateTimeFormat("ko-KR", {
+    month: "long",
+    year: "numeric",
+  }).format(monthDate);
+  const today = toDateInputValue(new Date());
+
+  function moveMonth(offset: number) {
+    setMonthDate((current) => {
+      const next = new Date(current);
+      next.setMonth(next.getMonth() + offset);
+      return next;
+    });
+  }
+
+  return (
+    <section className="rounded-md border border-border bg-background p-2.5">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <button
+          aria-label="이전 달"
+          className="inline-flex size-7 items-center justify-center rounded-md text-primary hover:bg-muted"
+          onClick={() => moveMonth(-1)}
+          type="button"
+        >
+          <ChevronLeft className="size-4" aria-hidden="true" />
+        </button>
+        <p className="font-serif text-lg font-semibold text-primary">
+          {monthLabel}
+        </p>
+        <button
+          aria-label="다음 달"
+          className="inline-flex size-7 items-center justify-center rounded-md text-primary hover:bg-muted"
+          onClick={() => moveMonth(1)}
+          type="button"
+        >
+          <ChevronRight className="size-4" aria-hidden="true" />
+        </button>
+      </div>
+      <div className="grid grid-cols-7 text-center text-[11px] font-medium text-muted-foreground">
+        {["일", "월", "화", "수", "목", "금", "토"].map((weekday, index) => (
+          <div className={cn("py-1", getWeekdayTextClass(index))} key={weekday}>
+            {weekday}
+          </div>
+        ))}
+      </div>
+      <div className="mt-1 grid grid-cols-7 gap-0.5">
+        {days.map((day, index) => {
+          if (!day) {
+            return <div key={`blank-${monthLabel}-${index}`} />;
+          }
+
+          const isActive = activeDateSet.has(day);
+          const isSelectedWeek = selectedWeekDateSet.has(day);
+          const isToday = day === today;
+
+          return (
+            <button
+              aria-label={formatCompactDateWithWeekday(day)}
+              className={cn(
+                "relative flex h-7 items-center justify-center rounded-md text-xs font-medium outline-none transition-colors",
+                getWeekdayTextClass(day),
+                isActive
+                  ? "hover:bg-muted focus-visible:ring-2 focus-visible:ring-primary"
+                  : "cursor-not-allowed text-muted-foreground/45 opacity-60",
+                isActive &&
+                  isSelectedWeek &&
+                  "bg-primary/10 ring-1 ring-primary hover:bg-primary/15"
+              )}
+              disabled={!isActive}
+              key={day}
+              onClick={() => onWeekStartChange(getWeekStartDate(day))}
+              type="button"
+            >
+              <span>{Number(day.slice(-2))}</span>
+              {isToday ? (
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "absolute bottom-0.5 left-1/2 size-1 -translate-x-1/2 rounded-full",
+                    isSelectedWeek && isActive ? "bg-primary" : "bg-primary/70"
+                  )}
+                />
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function ReservationReviewItem({
   collapsed,
   focused,
@@ -831,6 +926,7 @@ function ReservationReviewItem({
   onFocus,
   onHideToggle,
   onReview,
+  onSlotHover,
   reservation,
   reviewingKey,
 }: {
@@ -844,140 +940,142 @@ function ReservationReviewItem({
   onReview: (input: {
     confirmedSlotId?: string | null;
     reservationId: string;
-    status: Extract<ReservationStatus, "APPROVED" | "PENDING" | "REJECTED">;
+    status: Extract<ReservationStatus, "APPROVED" | "PENDING">;
   }) => void;
+  onSlotHover: (slotId: string | null, reservationId?: string | null) => void;
   reservation: HostReservationGroup;
   reviewingKey: string | null;
 }) {
   const status = getStatusMeta(reservation.status);
-  const rejectKey = `${reservation.id}:REJECTED`;
   const participantNames = reservation.participants
     .map((participant) => participant.guest_name)
     .join(", ");
 
   return (
-    <div className="space-y-3 py-3 first:pt-0 last:pb-0">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={cn(
-                "rounded-full border px-2 py-0.5 text-xs font-medium",
-                status.className,
-              )}
-            >
-              {status.label}
-            </span>
-            <span className="font-mono text-xs text-muted-foreground">
-              {reservation.reservation_access_code}
-            </span>
-          </div>
-          <p className="mt-2 truncate text-sm font-medium text-foreground">
-            {participantNames || "이름 없음"}
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            총 {reservation.headcount}명
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          {hasConfirmed ? (
-            <Button
-              onClick={onFocus}
-              size="sm"
-              variant={focused ? "primary" : "ghost"}
-            >
-              {focused ? (
-                <EyeOff className="size-4" aria-hidden="true" />
-              ) : (
-                <Eye className="size-4" aria-hidden="true" />
-              )}
-              펜딩
-            </Button>
-          ) : (
-            <Button
-              onClick={onHideToggle}
-              size="sm"
-              variant={hiddenPending ? "primary" : "ghost"}
-            >
-              {hiddenPending ? (
-                <Eye className="size-4" aria-hidden="true" />
-              ) : (
-                <EyeOff className="size-4" aria-hidden="true" />
-              )}
-              {hiddenPending ? "보기" : "안 보기"}
-            </Button>
+    <div
+      className={cn(
+        "rounded-md border bg-background transition-colors",
+        collapsed ? "border-border" : "border-primary/25 shadow-sm"
+      )}
+    >
+      <button
+        className="flex w-full items-center gap-2 px-3 py-2.5 text-left"
+        onClick={onCollapseToggle}
+        type="button"
+      >
+        <span
+          className={cn(
+            "shrink-0 rounded-full border px-2 py-0.5 text-xs font-medium",
+            status.className
           )}
-          <Button onClick={onCollapseToggle} size="sm" variant="ghost">
-            {collapsed ? (
-              <ChevronDown className="size-4" aria-hidden="true" />
-            ) : (
-              <ChevronUp className="size-4" aria-hidden="true" />
-            )}
-          </Button>
-          <Button
-            disabled={reservation.status === "REJECTED" || reviewingKey !== null}
-            onClick={() =>
-              onReview({
-                reservationId: reservation.id,
-                status: "REJECTED",
-              })
-            }
-            size="sm"
-            variant="ghost"
-          >
-            {reviewingKey === rejectKey ? (
-              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-            ) : (
-              <X className="size-4" aria-hidden="true" />
-            )}
-            거절
-          </Button>
-        </div>
-      </div>
+        >
+          {status.label}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
+          {participantNames || "이름 없음"}
+        </span>
+        <span className="shrink-0 text-xs text-muted-foreground">
+          {reservation.headcount}명
+        </span>
+        {collapsed ? (
+          <ChevronDown
+            className="size-4 shrink-0 text-primary"
+            aria-hidden="true"
+          />
+        ) : (
+          <ChevronUp
+            className="size-4 shrink-0 text-primary"
+            aria-hidden="true"
+          />
+        )}
+      </button>
 
       {!collapsed ? (
-      <div className="space-y-2">
-        {reservation.slots.map((slot) => {
-          const approveKey = `${reservation.id}:${slot.id}:APPROVED`;
-          const pendingKey = `${reservation.id}:${slot.id}:PENDING`;
-          const nextStatus = slot.is_confirmed ? "PENDING" : "APPROVED";
-
-          return (
-            <div
-              className="grid grid-cols-[1fr_auto] items-center gap-2"
-              key={slot.id}
-            >
-              <span className="min-w-0 truncate rounded-md border border-border bg-background px-2 py-2 font-mono text-xs text-foreground">
-                {formatTimeRange({
-                  endAt: slot.end_at,
-                  startAt: slot.start_at,
-                })}
-              </span>
+        <div className="border-t border-border px-3 pb-3 pt-3">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            {hasConfirmed ? (
               <Button
-                disabled={reviewingKey !== null}
-                onClick={() =>
-                  onReview({
-                    confirmedSlotId: slot.id,
-                    reservationId: reservation.id,
-                    status: nextStatus,
-                  })
-                }
+                onClick={onFocus}
                 size="sm"
-                variant={slot.is_confirmed ? "primary" : "outline"}
+                variant={focused ? "primary" : "ghost"}
               >
-                {reviewingKey === approveKey || reviewingKey === pendingKey ? (
-                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                ) : slot.is_confirmed ? (
-                  <X className="size-4" aria-hidden="true" />
+                {focused ? (
+                  <EyeOff className="size-4" aria-hidden="true" />
                 ) : (
-                  <Check className="size-4" aria-hidden="true" />
+                  <Eye className="size-4" aria-hidden="true" />
                 )}
-                {slot.is_confirmed ? "취소" : "승인"}
+                후보 시간
               </Button>
-            </div>
-          );
-        })}
-      </div>
+            ) : (
+              <Button
+                onClick={onHideToggle}
+                size="sm"
+                variant={hiddenPending ? "primary" : "ghost"}
+              >
+                {hiddenPending ? (
+                  <Eye className="size-4" aria-hidden="true" />
+                ) : (
+                  <EyeOff className="size-4" aria-hidden="true" />
+                )}
+                {hiddenPending ? "보기" : "안 보기"}
+              </Button>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            {reservation.slots.map((slot) => {
+              const approveKey = `${reservation.id}:${slot.id}:APPROVED`;
+              const pendingKey = `${reservation.id}:${slot.id}:PENDING`;
+              const nextStatus = slot.is_confirmed ? "PENDING" : "APPROVED";
+
+              return (
+                <div
+                  className="grid grid-cols-[auto_1fr_auto] items-center gap-2"
+                  key={slot.id}
+                >
+                  <span className="rounded-full border border-border bg-background px-2 py-1 font-mono text-[11px] text-primary">
+                    후보 {slot.priority_order}
+                  </span>
+                  <span className="min-w-0 truncate rounded-md border border-border bg-muted px-2 py-2 font-mono text-xs text-foreground">
+                    {formatTimeRange({
+                      endAt: slot.end_at,
+                      startAt: slot.start_at,
+                    })}
+                  </span>
+                  <Button
+                    disabled={reviewingKey !== null}
+                    onBlur={() => onSlotHover(null, null)}
+                    onFocus={() => onSlotHover(slot.id, reservation.id)}
+                    onMouseEnter={() => onSlotHover(slot.id, reservation.id)}
+                    onMouseLeave={() => onSlotHover(null, null)}
+                    onClick={() =>
+                      onReview({
+                        confirmedSlotId: slot.id,
+                        reservationId: reservation.id,
+                        status: nextStatus,
+                      })
+                    }
+                    size="sm"
+                    variant={slot.is_confirmed ? "primary" : "outline"}
+                  >
+                    {reviewingKey === approveKey ||
+                    reviewingKey === pendingKey ? (
+                      <Loader2
+                        className="size-4 animate-spin"
+                        aria-hidden="true"
+                      />
+                    ) : slot.is_confirmed ? (
+                      <X className="size-4" aria-hidden="true" />
+                    ) : (
+                      <Check className="size-4" aria-hidden="true" />
+                    )}
+                    {slot.is_confirmed ? "취소" : "승인"}
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       ) : null}
     </div>
   );
@@ -1052,7 +1150,7 @@ function BufferSettingsDialog({
         }
       }}
     >
-      <div className="w-full max-w-md border border-border bg-background p-4 shadow-xl">
+      <div className="w-full max-w-3xl border border-border bg-background p-4 shadow-xl">
         <div className="mb-4 flex items-center justify-between gap-3">
           <div>
             <p className="text-sm font-medium text-accent">Buffer</p>
@@ -1132,245 +1230,23 @@ function BufferSettingsDialog({
   );
 }
 
-function DateRangeDialog({
-  activeDates,
-  dateStart,
-  isPending,
-  onChange,
-  onClose,
-  onSave,
-}: {
-  activeDates: string[];
-  dateStart: string;
-  isPending: boolean;
-  onChange: (activeDates: string[]) => void;
-  onClose: () => void;
-  onSave: () => void;
-}) {
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    }
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-end bg-black/30 p-4 sm:items-center sm:justify-center"
-      onMouseDown={(event) => {
-        if (event.currentTarget === event.target) {
-          onClose();
-        }
-      }}
-    >
-      <div className="w-full max-w-md border border-border bg-background p-4 shadow-xl">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-medium text-accent">Event dates</p>
-            <h3 className="font-serif text-2xl font-semibold text-primary">
-              날짜 수정
-            </h3>
-          </div>
-          <Button onClick={onClose} size="sm" variant="ghost">
-            <X className="size-4" aria-hidden="true" />
-          </Button>
-        </div>
-
-        <MiniDateRangePicker
-          activeDates={activeDates}
-          initialDateStart={dateStart}
-          onChange={onChange}
-        />
-        <p className="mt-3 text-xs leading-5 text-muted-foreground">
-          활성 날짜를 클릭하거나 드래그해서 켜고 끌 수 있습니다.
-        </p>
-        <div className="mt-4 flex justify-end gap-2">
-          <Button disabled={isPending} onClick={onClose} variant="outline">
-            닫기
-          </Button>
-          <Button disabled={isPending} onClick={onSave}>
-            {isPending ? (
-              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-            ) : (
-              <Check className="size-4" aria-hidden="true" />
-            )}
-            저장
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function MiniDateRangePicker({
-  activeDates,
-  initialDateStart,
-  onChange,
-}: {
-  activeDates: string[];
-  initialDateStart: string;
-  onChange: (activeDates: string[]) => void;
-}) {
-  const [anchorDate, setAnchorDate] = useState<string | null>(null);
-  const [dragPreviewDates, setDragPreviewDates] = useState<string[]>([]);
-  const [dragMode, setDragMode] = useState<"activate" | "deactivate" | null>(
-    null,
-  );
-  const [monthDate, setMonthDate] = useState(() =>
-    parseDateOnly(initialDateStart),
-  );
-  const days = useMemo(() => buildMonthDays(monthDate), [monthDate]);
-  const activeDateSet = useMemo(() => new Set(activeDates), [activeDates]);
-  const previewDateSet = useMemo(
-    () => new Set(dragPreviewDates),
-    [dragPreviewDates],
-  );
-  const monthLabel = new Intl.DateTimeFormat("ko-KR", {
-    month: "long",
-    year: "numeric",
-  }).format(monthDate);
-
-  function moveMonth(offset: number) {
-    setMonthDate((current) => {
-      const next = new Date(current);
-      next.setMonth(next.getMonth() + offset);
-      return next;
-    });
-  }
-
-  function getRangeDates(nextDate: string) {
-    const start = anchorDate ?? nextDate;
-    const [from, to] = nextDate < start ? [nextDate, start] : [start, nextDate];
-
-    return buildDateList(from, to);
-  }
-
-  function updatePreview(nextDate: string) {
-    setDragPreviewDates(getRangeDates(nextDate));
-  }
-
-  function commitPreview() {
-    if (!dragMode) {
-      return;
-    }
-
-    const nextActiveDates = new Set(activeDates);
-
-    for (const date of dragPreviewDates) {
-      if (dragMode === "activate") {
-        nextActiveDates.add(date);
-      } else {
-        nextActiveDates.delete(date);
-      }
-    }
-
-    onChange([...nextActiveDates].sort());
-    setAnchorDate(null);
-    setDragMode(null);
-    setDragPreviewDates([]);
-  }
-
-  return (
-    <div className="border border-border bg-muted p-3">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <button
-          aria-label="이전 달"
-          className="inline-flex size-9 items-center justify-center rounded-md border border-border bg-background text-primary"
-          onClick={() => moveMonth(-1)}
-          type="button"
-        >
-          <ChevronLeft className="size-4" aria-hidden="true" />
-        </button>
-        <p className="font-serif text-lg font-semibold text-primary">
-          {monthLabel}
-        </p>
-        <button
-          aria-label="다음 달"
-          className="inline-flex size-9 items-center justify-center rounded-md border border-border bg-background text-primary"
-          onClick={() => moveMonth(1)}
-          type="button"
-        >
-          <ChevronRight className="size-4" aria-hidden="true" />
-        </button>
-      </div>
-      <div className="grid grid-cols-7 gap-1 text-center text-xs text-muted-foreground">
-        {["일", "월", "화", "수", "목", "금", "토"].map((weekday) => (
-          <div className="py-1" key={weekday}>
-            {weekday}
-          </div>
-        ))}
-      </div>
-      <div
-        className="mt-1 grid grid-cols-7 gap-1"
-        onPointerCancel={() => {
-          setAnchorDate(null);
-          setDragMode(null);
-          setDragPreviewDates([]);
-        }}
-        onPointerUp={commitPreview}
-      >
-        {days.map((day, index) =>
-          day ? (
-            <button
-              className={cn(
-                "h-9 rounded-md border text-sm font-medium",
-                getDateButtonActiveState(day, activeDateSet, previewDateSet, dragMode)
-                  ? "border-primary bg-primary text-primary-foreground"
-                  : "border-border bg-background text-foreground",
-              )}
-              key={day}
-              onPointerDown={(event) => {
-                event.preventDefault();
-                setAnchorDate(day);
-                setDragMode(activeDateSet.has(day) ? "deactivate" : "activate");
-                setDragPreviewDates([day]);
-              }}
-              onPointerEnter={() => {
-                if (anchorDate) {
-                  updatePreview(day);
-                }
-              }}
-              type="button"
-            >
-              {Number(day.slice(-2))}
-            </button>
-          ) : (
-            <div key={`blank-${monthLabel}-${index}`} />
-          ),
-        )}
-      </div>
-    </div>
-  );
-}
-
-function getDateButtonActiveState(
-  date: string,
-  activeDateSet: Set<string>,
-  previewDateSet: Set<string>,
-  dragMode: "activate" | "deactivate" | null,
-) {
-  if (!previewDateSet.has(date) || !dragMode) {
-    return activeDateSet.has(date);
-  }
-
-  return dragMode === "activate";
-}
-
 function buildMonthDays(monthDate: Date) {
   const firstDate = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
-  const lastDate = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0);
+  const lastDate = new Date(
+    monthDate.getFullYear(),
+    monthDate.getMonth() + 1,
+    0
+  );
   const days: Array<string | null> = Array.from(
     { length: firstDate.getDay() },
-    () => null,
+    () => null
   );
 
   for (let day = 1; day <= lastDate.getDate(); day += 1) {
     days.push(
-      toDateInputValue(new Date(monthDate.getFullYear(), monthDate.getMonth(), day)),
+      toDateInputValue(
+        new Date(monthDate.getFullYear(), monthDate.getMonth(), day)
+      )
     );
   }
 
@@ -1388,6 +1264,48 @@ function buildDateList(dateStart: string, dateEnd: string) {
   }
 
   return dates;
+}
+
+function addDays(date: string, days: number) {
+  const value = parseDateOnly(date);
+  value.setDate(value.getDate() + days);
+  return toDateInputValue(value);
+}
+
+function clampBufferRangeToConfirmedSlot(
+  range: TimeRange,
+  slotRange: TimeRange,
+  side: EventBufferSide
+) {
+  const minimumMs = 60_000;
+  const slotStart = new Date(slotRange.startAt).getTime();
+  const slotEnd = new Date(slotRange.endAt).getTime();
+  const rangeStart = new Date(range.startAt).getTime();
+  const rangeEnd = new Date(range.endAt).getTime();
+
+  if (side === "BEFORE") {
+    const nextEnd = Math.min(rangeEnd, slotStart);
+    const nextStart = Math.min(rangeStart, nextEnd - minimumMs);
+
+    return {
+      endAt: new Date(nextEnd).toISOString(),
+      startAt: new Date(nextStart).toISOString(),
+    };
+  }
+
+  const nextStart = Math.max(rangeStart, slotEnd);
+  const nextEnd = Math.max(rangeEnd, nextStart + minimumMs);
+
+  return {
+    endAt: new Date(nextEnd).toISOString(),
+    startAt: new Date(nextStart).toISOString(),
+  };
+}
+
+function getWeekStartDate(date: string) {
+  const value = parseDateOnly(date);
+  value.setDate(value.getDate() - value.getDay());
+  return toDateInputValue(value);
 }
 
 function parseDateOnly(value: string) {

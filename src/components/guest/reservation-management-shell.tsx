@@ -4,25 +4,31 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   CalendarCheck,
-  Check,
   Loader2,
   Save,
   Trash2,
   Users,
-  X,
 } from "lucide-react";
 import {
   cancelReservationGroup,
   updateReservationGroup,
   type ReservationManagementView,
 } from "@/app/actions/reservations";
+import { ReservationPriorityList } from "@/components/guest/reservation-priority-list";
 import { TimeSelectionGrid } from "@/components/calendar/time-selection-grid";
 import { Button } from "@/components/ui/button";
 import { CopyButton } from "@/components/ui/copy-button";
 import { Input } from "@/components/ui/input";
+import {
+  getConfirmedBufferRanges,
+  getConfirmedDisplaySlots,
+} from "@/lib/reservations/display-ranges";
 import { getReservationEditCapabilities } from "@/lib/reservations/rules";
-import { formatTimeRange } from "@/lib/time/event-days";
-import { buildEffectiveBufferTimeRanges } from "@/lib/time/ranges";
+import {
+  getSlotCandidateRange,
+  getSlotDisplayRange,
+} from "@/lib/reservations/slots";
+import { splitAvailableBlocksByUnavailable } from "@/lib/time/availability";
 import { cn } from "@/lib/utils";
 import { useSelectionStore } from "@/store/use-selection-store";
 import type { ReservationStatus, SelectedTimeRange, TimeRange } from "@/types/domain";
@@ -41,6 +47,7 @@ export function ReservationManagementShell({
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isPriorityListOpen, setIsPriorityListOpen] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [password, setPassword] = useState("");
@@ -50,71 +57,105 @@ export function ReservationManagementShell({
   );
   const selectedRanges = useSelectionStore((state) => state.selectedRanges);
   const setSelectedRanges = useSelectionStore((state) => state.setSelectedRanges);
+  const updateSelectedRange = useSelectionStore(
+    (state) => state.updateSelectedRange,
+  );
   const { canCancel, canEditPeople, canEditSlots } =
     getReservationEditCapabilities(reservation.status);
-  const bufferRanges = useMemo<TimeRange[]>(
+  const hasConfirmedSlot = reservation.slots.some((slot) => slot.is_confirmed);
+  const confirmedSlotIds = useMemo(
     () =>
-      buildEffectiveBufferTimeRanges({
-        afterActive: event.is_buffer_after_active,
-        beforeActive: event.is_buffer_before_active,
-        bufferMinutes: event.buffer_time_minutes,
-        isBufferActive: event.is_buffer_active,
-        overrides: bufferOverrides,
-        ranges: reservationSlots
+      new Set(
+        reservation.slots
           .filter((slot) => slot.is_confirmed)
-          .map((slot) => ({
-            endAt: slot.end_at,
-            id: slot.id,
-            startAt: slot.start_at,
-          })),
+          .map((slot) => slot.id),
+    ),
+    [reservation.slots],
+  );
+  const confirmedSlotById = useMemo(
+    () =>
+      new Map(
+        reservation.slots
+          .filter((slot) => slot.is_confirmed)
+          .map((slot) => [slot.id, slot]),
+      ),
+    [reservation.slots],
+  );
+  const publicTimeBlocks = useMemo(
+    () => timeBlocks.filter((block) => block.type === "AVAILABLE"),
+    [timeBlocks],
+  );
+  const confirmedDisplaySlots = useMemo(
+    () => getConfirmedDisplaySlots(reservationSlots),
+    [reservationSlots],
+  );
+  const confirmedRanges = useMemo(
+    () => confirmedDisplaySlots.map((slot) => getSlotDisplayRange(slot)),
+    [confirmedDisplaySlots],
+  );
+  const bufferRanges = useMemo(
+    () =>
+      getConfirmedBufferRanges({
+        bufferOverrides,
+        event,
+        reservationSlots,
       }),
-    [
-      bufferOverrides,
-      event.buffer_time_minutes,
-      event.is_buffer_active,
-      event.is_buffer_after_active,
-      event.is_buffer_before_active,
-      reservationSlots,
-    ],
+    [bufferOverrides, event, reservationSlots],
   );
-  const blockedRanges = useMemo<TimeRange[]>(
-    () => [
-      ...timeBlocks
-        .filter((block) => block.type === "BLOCKED")
-        .map((block) => ({
-          endAt: block.end_at,
-          startAt: block.start_at,
-        })),
-      ...bufferRanges,
-    ],
-    [bufferRanges, timeBlocks],
-  );
-  const visibleReservationSlots = useMemo(
+  const displayedTimeBlocks = useMemo(
     () =>
-      reservationSlots.filter((slot) => slot.reservation_id !== reservation.id),
-    [reservation.id, reservationSlots],
+      splitAvailableBlocksByUnavailable(publicTimeBlocks, [
+        ...confirmedRanges,
+        ...bufferRanges,
+      ]),
+    [bufferRanges, confirmedRanges, publicTimeBlocks],
   );
-  const occupiedRanges = useMemo<TimeRange[]>(
+  const calendarSelectedRanges = useMemo(
     () =>
-      visibleReservationSlots.map((slot) => ({
-        endAt: slot.end_at,
-        startAt: slot.start_at,
-      })),
-    [visibleReservationSlots],
+      selectedRanges.filter((range) => {
+        if (!confirmedSlotIds.has(range.id)) {
+          return true;
+        }
+
+        const slot = confirmedSlotById.get(range.id);
+
+        if (!slot) {
+          return false;
+        }
+
+        return !rangesEqual(range, getSlotDisplayRange(slot));
+      }),
+    [confirmedSlotById, confirmedSlotIds, selectedRanges],
   );
 
   useEffect(() => {
+    const displaySlots = canEditSlots ? reservation.slots : [];
+
     setSelectedRanges(
-      reservation.slots.map<SelectedTimeRange>((slot) => ({
-        availability: "available",
-        endAt: slot.end_at,
-        id: slot.id,
-        startAt: slot.start_at,
-      })),
+      displaySlots.map<SelectedTimeRange>((slot) => {
+        const range = getSlotCandidateRange(slot);
+
+        return {
+          availability: "available",
+          endAt: range.endAt,
+          id: slot.id,
+          isConfirmed: slot.is_confirmed,
+          isConfirmedCandidate:
+            slot.is_confirmed && !rangesEqual(range, getSlotDisplayRange(slot)),
+          priorityOrder: slot.priority_order,
+          startAt: range.startAt,
+        };
+      }),
     );
 
     return () => clearSelection();
-  }, [clearSelection, reservation.id, reservation.slots, setSelectedRanges]);
+  }, [
+    canEditSlots,
+    clearSelection,
+    reservation.id,
+    reservation.slots,
+    setSelectedRanges,
+  ]);
 
   async function handleSave(eventSubmit: FormEvent<HTMLFormElement>) {
     eventSubmit.preventDefault();
@@ -126,7 +167,7 @@ export function ReservationManagementShell({
       return;
     }
 
-    if (canEditSlots && selectedRanges.length === 0) {
+    if (canEditSlots && selectedRanges.length === 0 && !hasConfirmedSlot) {
       setError("예약 후보 시간을 하나 이상 선택해 주세요.");
       return;
     }
@@ -149,10 +190,12 @@ export function ReservationManagementShell({
       participants: names.map((guestName) => ({ guestName })),
       password,
       requestedSlots: canEditSlots
-        ? selectedRanges.map((range) => ({
-            endAt: range.endAt,
-            startAt: range.startAt,
-          }))
+        ? selectedRanges
+            .filter((range) => !range.isConfirmed)
+            .map((range) => ({
+              endAt: range.endAt,
+              startAt: range.startAt,
+            }))
         : undefined,
       reservationAccessCode: reservation.reservation_access_code,
     });
@@ -196,6 +239,22 @@ export function ReservationManagementShell({
     router.refresh();
   }
 
+  function handleResizeSelectedRange(
+    selectedRange: SelectedTimeRange,
+    range: TimeRange,
+  ) {
+    if (selectedRange.isConfirmed) {
+      return;
+    }
+
+    setError(null);
+    updateSelectedRange(selectedRange.id, range, "available");
+  }
+
+  function reorderSelectedRange(draggedRangeId: string, targetRangeId: string) {
+    setSelectedRanges(reorderRanges(selectedRanges, draggedRangeId, targetRangeId));
+  }
+
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
       <div className="min-h-96 bg-background">
@@ -206,20 +265,20 @@ export function ReservationManagementShell({
         </div>
         <div className="mt-4">
           <TimeSelectionGrid
-            allowWaitlist
             activeDates={activeDates}
-            blockedRanges={blockedRanges}
-            bufferRanges={bufferRanges}
             dailyEndTime={event.daily_end_time}
             dailyStartTime={event.daily_start_time}
             dateEnd={event.date_end}
             dateStart={event.date_start}
             mode="guest-reservation"
-            occupiedRanges={occupiedRanges}
+            onResizeSelectedRange={
+              canEditSlots ? handleResizeSelectedRange : undefined
+            }
             readOnly={!canEditSlots}
-            reservationSlots={visibleReservationSlots}
-            selectedRanges={selectedRanges}
-            timeBlocks={timeBlocks}
+            reservationSlots={confirmedDisplaySlots}
+            selectedRanges={calendarSelectedRanges}
+            slotDisplayMode="public"
+            timeBlocks={displayedTimeBlocks}
           />
         </div>
       </div>
@@ -314,34 +373,43 @@ export function ReservationManagementShell({
           예약 취소
         </Button>
 
-        <div className="space-y-2 border-t border-border pt-4">
-          <p className="text-sm font-medium text-foreground">
-            선택 {selectedRanges.length}개
-          </p>
-          <div className="max-h-48 space-y-2 overflow-auto">
-            {selectedRanges.map((range) => (
-              <div
-                className="grid grid-cols-[1fr_auto] items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs"
-                key={range.id}
-              >
-                <span className="truncate">{formatTimeRange(range)}</span>
-                {canEditSlots ? (
-                  <button
-                    className="text-muted-foreground hover:text-danger"
-                    onClick={() => removeSelectedRange(range.id)}
-                    type="button"
-                  >
-                    <X className="size-4" aria-hidden="true" />
-                  </button>
-                ) : (
-                  <Check className="size-4 text-primary" aria-hidden="true" />
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
+        <ReservationPriorityList
+          canEdit={canEditSlots}
+          isOpen={isPriorityListOpen}
+          onOpenChange={setIsPriorityListOpen}
+          onRemove={removeSelectedRange}
+          onReorder={reorderSelectedRange}
+          ranges={selectedRanges}
+          title="후보"
+        />
       </aside>
     </div>
+  );
+}
+
+function reorderRanges(
+  ranges: SelectedTimeRange[],
+  draggedRangeId: string,
+  targetRangeId: string,
+) {
+  const draggedIndex = ranges.findIndex((range) => range.id === draggedRangeId);
+  const targetIndex = ranges.findIndex((range) => range.id === targetRangeId);
+
+  if (draggedIndex === -1 || targetIndex === -1 || draggedIndex === targetIndex) {
+    return ranges;
+  }
+
+  const nextRanges = [...ranges];
+  const [draggedRange] = nextRanges.splice(draggedIndex, 1);
+  nextRanges.splice(targetIndex, 0, draggedRange);
+
+  return nextRanges;
+}
+
+function rangesEqual(left: TimeRange, right: TimeRange) {
+  return (
+    new Date(left.startAt).getTime() === new Date(right.startAt).getTime() &&
+    new Date(left.endAt).getTime() === new Date(right.endAt).getTime()
   );
 }
 

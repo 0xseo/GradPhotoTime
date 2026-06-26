@@ -19,7 +19,7 @@ export function getReservationEditCapabilities(status: ReservationStatus) {
   return {
     canCancel: status === "PENDING" || status === "APPROVED",
     canEditPeople: status === "PENDING" || status === "APPROVED",
-    canEditSlots: status === "PENDING",
+    canEditSlots: status === "PENDING" || status === "APPROVED",
   };
 }
 

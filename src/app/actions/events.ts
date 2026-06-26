@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { actionError, actionOk, type ActionResult } from "@/lib/actions/result";
+import { getSlotDisplayRange } from "@/lib/reservations/slots";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import type { Tables } from "@/lib/supabase/database.types";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -39,6 +40,7 @@ export type PublicEvent = Pick<
 >;
 
 export type CreateEventInput = {
+  activeDates?: string[];
   bufferTimeMinutes?: number;
   dailyEndTime: string;
   dailyStartTime: string;
@@ -118,7 +120,7 @@ export async function createEvent(
     const { error: activeDatesError } = await admin
       .from("event_active_dates")
       .insert(
-        buildDateList(payload.dateStart, payload.dateEnd).map((activeDate) => ({
+        payload.activeDates.map((activeDate) => ({
           active_date: activeDate,
           event_id: data.id,
         })),
@@ -284,6 +286,8 @@ export async function updateEventBufferSettings(
 
 export type UpdateEventDateRangeInput = {
   activeDates: string[];
+  dailyEndTime: string;
+  dailyStartTime: string;
   eventId: string;
 };
 
@@ -297,6 +301,8 @@ export async function updateEventDateRange(
   try {
     const { admin, event } = await getEditableEventContext(input.eventId);
     const activeDates = parseActiveDates(input.activeDates);
+    const dailyStartTime = requireTime(input.dailyStartTime, "dailyStartTime");
+    const dailyEndTime = requireTime(input.dailyEndTime, "dailyEndTime");
     const dateStart = activeDates[0];
     const dateEnd = activeDates.at(-1);
 
@@ -304,9 +310,15 @@ export async function updateEventDateRange(
       return actionError("활성 날짜를 하나 이상 선택해 주세요.");
     }
 
+    if (dailyStartTime >= dailyEndTime) {
+      return actionError("시작 시간은 종료 시간보다 빨라야 합니다.");
+    }
+
     const { data, error } = await admin
       .from("events")
       .update({
+        daily_end_time: dailyEndTime,
+        daily_start_time: dailyStartTime,
         date_end: dateEnd,
         date_start: dateStart,
       })
@@ -470,7 +482,9 @@ export async function toggleEventBufferOverride(
 
     const { data: slot, error: slotError } = await admin
       .from("reservation_slots")
-      .select("id,event_id,is_confirmed")
+      .select(
+        "id,event_id,start_at,end_at,confirmed_start_at,confirmed_end_at,is_confirmed",
+      )
       .eq("id", reservationSlotId)
       .eq("event_id", event.id)
       .eq("is_confirmed", true)
@@ -480,12 +494,16 @@ export async function toggleEventBufferOverride(
       return actionError("이 이벤트의 확정 슬롯만 버퍼를 수정할 수 있습니다.");
     }
 
+    const safeCustomRange = customRange
+      ? clampBufferRangeToSlotBoundary(customRange, getSlotDisplayRange(slot), side)
+      : null;
+
     const { data, error } = await admin
       .from("event_buffer_overrides")
       .upsert(
         {
-          custom_end_at: customRange?.endAt ?? null,
-          custom_start_at: customRange?.startAt ?? null,
+          custom_end_at: safeCustomRange?.endAt ?? null,
+          custom_start_at: safeCustomRange?.startAt ?? null,
           event_id: event.id,
           is_active: isActive,
           reservation_slot_id: reservationSlotId,
@@ -535,9 +553,16 @@ function parseCreateEventInput(input: CreateEventInput) {
   const initialAvailableBlocks = input.initialAvailableBlocks
     ? requireTimeRanges(input.initialAvailableBlocks, "initialAvailableBlocks")
     : [];
+  const activeDates = input.activeDates
+    ? parseActiveDates(input.activeDates)
+    : buildDateList(dateStart, dateEnd);
 
   if (new Date(dateStart).getTime() > new Date(dateEnd).getTime()) {
     throw new Error("dateStart must be earlier than or equal to dateEnd.");
+  }
+
+  if (activeDates[0] < dateStart || dateEnd < activeDates.at(-1)!) {
+    throw new Error("activeDates must be inside the event date range.");
   }
 
   if (dailyStartTime >= dailyEndTime) {
@@ -545,6 +570,7 @@ function parseCreateEventInput(input: CreateEventInput) {
   }
 
   return {
+    activeDates,
     bufferTimeMinutes,
     dailyEndTime,
     dailyStartTime,
@@ -616,6 +642,36 @@ function parseOptionalBufferRange(
   }
 
   return { endAt, startAt };
+}
+
+function clampBufferRangeToSlotBoundary(
+  range: TimeRange,
+  slotRange: TimeRange,
+  side: EventBufferSide,
+) {
+  const minimumMs = 60_000;
+  const slotStart = new Date(slotRange.startAt).getTime();
+  const slotEnd = new Date(slotRange.endAt).getTime();
+  const rangeStart = new Date(range.startAt).getTime();
+  const rangeEnd = new Date(range.endAt).getTime();
+
+  if (side === "BEFORE") {
+    const nextEnd = Math.min(rangeEnd, slotStart);
+    const nextStart = Math.min(rangeStart, nextEnd - minimumMs);
+
+    return {
+      endAt: new Date(nextEnd).toISOString(),
+      startAt: new Date(nextStart).toISOString(),
+    };
+  }
+
+  const nextStart = Math.max(rangeStart, slotEnd);
+  const nextEnd = Math.max(rangeEnd, nextStart + minimumMs);
+
+  return {
+    endAt: new Date(nextEnd).toISOString(),
+    startAt: new Date(nextStart).toISOString(),
+  };
 }
 
 function buildDateList(dateStart: string, dateEnd: string) {

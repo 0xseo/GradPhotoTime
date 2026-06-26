@@ -1,4 +1,6 @@
 import { CalendarShell } from "@/components/calendar/calendar-shell";
+import { EventDateEditButton } from "@/components/host/event-date-edit-button";
+import { EventShareButton } from "@/components/host/event-share-button";
 import { HostDashboardShell } from "@/components/host/host-dashboard-shell";
 import {
   listEventActiveDates,
@@ -77,7 +79,19 @@ export default async function HostEventPage({ params }: HostEventPageProps) {
   }
 
   return (
-    <CalendarShell eyebrow="Host" title={event.title}>
+    <CalendarShell
+      actions={
+        <div className="flex items-center gap-1">
+          <EventDateEditButton
+            activeDates={activeDatesResult.data.activeDates}
+            event={event}
+          />
+          <EventShareButton eventCode={event.event_code} />
+        </div>
+      }
+      eyebrow="Host"
+      title={event.title}
+    >
       {event.description ? (
         <p className="mb-5 max-w-2xl text-sm leading-6 text-muted-foreground">
           {event.description}

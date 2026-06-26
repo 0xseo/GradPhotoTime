@@ -16,7 +16,14 @@ import type { TimeBlockType, TimeRange } from "@/types/domain";
 
 export type EventScheduleSlot = Pick<
   Tables<"reservation_slots">,
-  "end_at" | "id" | "is_confirmed" | "reservation_id" | "start_at"
+  | "confirmed_end_at"
+  | "confirmed_start_at"
+  | "end_at"
+  | "id"
+  | "is_confirmed"
+  | "priority_order"
+  | "reservation_id"
+  | "start_at"
 > & {
   headcount: number;
   participantNames: string[];
@@ -199,8 +206,11 @@ async function listReservationSlotsForEvent(
 ) {
   const { data: slots, error: slotsError } = await supabase
     .from("reservation_slots")
-    .select("id,reservation_id,start_at,end_at,is_confirmed")
+    .select(
+      "id,reservation_id,start_at,end_at,confirmed_start_at,confirmed_end_at,is_confirmed,priority_order",
+    )
     .eq("event_id", eventId)
+    .order("priority_order", { ascending: true })
     .order("start_at", { ascending: true });
 
   if (slotsError) {
@@ -250,10 +260,13 @@ async function listReservationSlotsForEvent(
 
     return [
       {
+        confirmed_end_at: slot.confirmed_end_at,
+        confirmed_start_at: slot.confirmed_start_at,
         end_at: slot.end_at,
         headcount: reservation?.headcount ?? 1,
         id: slot.id,
         is_confirmed: slot.is_confirmed,
+        priority_order: slot.priority_order,
         participantNames:
           participants
             ?.filter(

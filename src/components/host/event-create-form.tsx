@@ -11,28 +11,27 @@ import {
   Trash2,
 } from "lucide-react";
 import { createEvent } from "@/app/actions/events";
+import { MeridiemTimeInput } from "@/components/calendar/meridiem-time-input";
+import { MonthJumpDialog } from "@/components/calendar/month-jump-dialog";
 import { TimeSelectionGrid } from "@/components/calendar/time-selection-grid";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  getEventDays,
-  toLocalIsoDateTime,
-} from "@/lib/time/event-days";
+import { getWeekdayTextClass } from "@/lib/time/calendar-style";
 import { cn } from "@/lib/utils";
 import { useSelectionStore } from "@/store/use-selection-store";
-import type { SelectedTimeRange } from "@/types/domain";
 
-const FULL_DAY_START = "00:00";
-const FULL_DAY_END = "24:00";
 const DEFAULT_START_TIME = "09:00";
 const DEFAULT_END_TIME = "18:00";
-const MINUTE_OPTIONS = ["00", "10", "20", "30", "40", "50"];
+type SetupPanel = "availability" | "schedule";
 
 export function EventCreateForm() {
   const router = useRouter();
   const today = useMemo(() => toDateInputValue(new Date()), []);
+  const [activeSetupPanel, setActiveSetupPanel] =
+    useState<SetupPanel>("schedule");
   const [dailyEndTime, setDailyEndTime] = useState(DEFAULT_END_TIME);
   const [dailyStartTime, setDailyStartTime] = useState(DEFAULT_START_TIME);
+  const [activeDates, setActiveDates] = useState<string[]>([today]);
   const [dateEnd, setDateEnd] = useState(today);
   const [dateStart, setDateStart] = useState(today);
   const [error, setError] = useState<string | null>(null);
@@ -41,50 +40,69 @@ export function EventCreateForm() {
   const [isPending, setIsPending] = useState(false);
   const clearSelection = useSelectionStore((state) => state.clearSelection);
   const selectedRanges = useSelectionStore((state) => state.selectedRanges);
-  const setSelectedRanges = useSelectionStore((state) => state.setSelectedRanges);
   const canShowGrid =
     dateStart !== "" &&
     dateEnd !== "" &&
     dailyStartTime !== "" &&
     dailyEndTime !== "" &&
     dateStart <= dateEnd &&
+    activeDates.length > 0 &&
     dailyStartTime < dailyEndTime;
+  const isStartAtZero = isZeroHour(dailyStartTime);
+  const isEndAtMidnight = isEndMidnight(dailyEndTime);
 
   useEffect(() => {
     if (!canShowGrid) {
       clearSelection();
-      return;
     }
+  }, [canShowGrid, clearSelection]);
 
-    setSelectedRanges(
-      buildDefaultAvailableRanges(dateStart, dateEnd, dailyStartTime, dailyEndTime),
-    );
-  }, [
-    canShowGrid,
-    clearSelection,
-    dailyEndTime,
-    dailyStartTime,
-    dateEnd,
-    dateStart,
-    setSelectedRanges,
-  ]);
+  function updateActiveDates(nextActiveDates: string[]) {
+    const sortedDates = [...new Set(nextActiveDates)].sort();
+
+    setActiveDates(sortedDates);
+    clearSelection();
+
+    if (sortedDates.length > 0) {
+      setDateStart(sortedDates[0]);
+      setDateEnd(sortedDates.at(-1) ?? sortedDates[0]);
+    }
+  }
+
+  function updateDateInputs(nextStart: string, nextEnd: string) {
+    setDateStart(nextStart);
+    setDateEnd(nextEnd);
+    clearSelection();
+
+    if (nextStart !== "" && nextEnd !== "" && nextStart <= nextEnd) {
+      setActiveDates(buildDateList(nextStart, nextEnd));
+    } else {
+      setActiveDates([]);
+    }
+  }
+
+  function updateDailyStartTime(value: string) {
+    setDailyStartTime(value);
+    clearSelection();
+  }
+
+  function updateDailyEndTime(value: string) {
+    setDailyEndTime(normalizeDailyEndTime(value));
+    clearSelection();
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
-
-    if (selectedRanges.length === 0) {
-      setError("촬영 가능한 시간을 하나 이상 선택해 주세요.");
-      return;
-    }
 
     setIsPending(true);
 
     const formData = new FormData(event.currentTarget);
     const result = await createEvent({
       bufferTimeMinutes: Number(formData.get("bufferTimeMinutes") ?? 30),
-      dailyEndTime: FULL_DAY_END,
-      dailyStartTime: FULL_DAY_START,
+      activeDates,
+      dailyEndTime,
+      dailyStartTime,
       dateEnd,
       dateStart,
       description: String(formData.get("description") ?? ""),
@@ -121,113 +139,177 @@ export function EventCreateForm() {
         />
       </label>
 
-      <DateRangePicker
-        dateEnd={dateEnd}
-        dateStart={dateStart}
-        onChange={(nextStart, nextEnd) => {
-          setDateStart(nextStart);
-          setDateEnd(nextEnd);
-        }}
-      />
-
-      <div className="grid grid-cols-2 gap-3">
-        <Input
-          label="시작일"
-          name="dateStart"
-          onChange={(eventChange) => setDateStart(eventChange.target.value)}
-          required
-          type="date"
-          value={dateStart}
-        />
-        <Input
-          label="종료일"
-          name="dateEnd"
-          onChange={(eventChange) => setDateEnd(eventChange.target.value)}
-          required
-          type="date"
-          value={dateEnd}
-        />
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <MeridiemTimeInput
-          label="시작 시간"
-          onChange={setDailyStartTime}
-          value={dailyStartTime}
-        />
-        <MeridiemTimeInput
-          label="종료 시간"
-          onChange={setDailyEndTime}
-          value={dailyEndTime}
-        />
-      </div>
-      <div className="space-y-3">
-        <Input
-          defaultValue={30}
-          label="버퍼 타임(분)"
-          max={180}
-          min={0}
-          name="bufferTimeMinutes"
-          step={10}
-          type="number"
-        />
-        <div className="grid grid-cols-2 gap-2">
-          <label className="flex h-11 items-center justify-center gap-2 rounded-md border border-border bg-background text-sm text-foreground">
-            <input
-              checked={isBufferBeforeActive}
-              className="size-4 accent-primary"
-              onChange={(eventChange) =>
-                setIsBufferBeforeActive(eventChange.target.checked)
-              }
-              type="checkbox"
-            />
-            약속 전
-          </label>
-          <label className="flex h-11 items-center justify-center gap-2 rounded-md border border-border bg-background text-sm text-foreground">
-            <input
-              checked={isBufferAfterActive}
-              className="size-4 accent-primary"
-              onChange={(eventChange) =>
-                setIsBufferAfterActive(eventChange.target.checked)
-              }
-              type="checkbox"
-            />
-            약속 후
-          </label>
+      <div className="border border-border bg-background">
+        <div className="grid grid-cols-2 border-b border-border">
+          <button
+            aria-selected={activeSetupPanel === "schedule"}
+            className={cn(
+              "h-11 border-b-2 text-sm font-medium transition-colors",
+              activeSetupPanel === "schedule"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-primary",
+            )}
+            onClick={() => setActiveSetupPanel("schedule")}
+            role="tab"
+            type="button"
+          >
+            일정 / 버퍼
+          </button>
+          <button
+            aria-selected={activeSetupPanel === "availability"}
+            className={cn(
+              "h-11 border-b-2 text-sm font-medium transition-colors",
+              activeSetupPanel === "availability"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-primary",
+            )}
+            onClick={() => setActiveSetupPanel("availability")}
+            role="tab"
+            type="button"
+          >
+            가능 시간
+          </button>
         </div>
-      </div>
 
-      {canShowGrid ? (
-        <div className="space-y-4 border-t border-border pt-5">
-          <div className="flex items-center gap-2 text-primary">
-            <CalendarRange className="size-5" aria-hidden="true" />
-            <h2 className="font-serif text-2xl font-semibold">
-              촬영 가능 시간
-            </h2>
+        {activeSetupPanel === "schedule" ? (
+          <div className="space-y-4 p-4">
+            <ActiveDatePicker
+              activeDates={activeDates}
+              initialDateStart={dateStart || today}
+              onChange={updateActiveDates}
+            />
+
+            <div className="grid grid-cols-2 gap-3">
+              <Input
+                label="시작일"
+                name="dateStart"
+                onChange={(eventChange) =>
+                  updateDateInputs(eventChange.target.value, dateEnd)
+                }
+                required
+                type="date"
+                value={dateStart}
+              />
+              <Input
+                label="종료일"
+                name="dateEnd"
+                onChange={(eventChange) =>
+                  updateDateInputs(dateStart, eventChange.target.value)
+                }
+                required
+                type="date"
+                value={dateEnd}
+              />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <MeridiemTimeInput
+                disabled={isStartAtZero}
+                label="시작 시간"
+                labelAccessory={
+                  <TimePresetCheckbox
+                    checked={isStartAtZero}
+                    label="0시"
+                    onChange={(checked) =>
+                      updateDailyStartTime(
+                        checked ? "00:00" : DEFAULT_START_TIME
+                      )
+                    }
+                  />
+                }
+                onChange={updateDailyStartTime}
+                value={dailyStartTime}
+              />
+              <MeridiemTimeInput
+                disabled={isEndAtMidnight}
+                label="종료 시간"
+                labelAccessory={
+                  <TimePresetCheckbox
+                    checked={isEndAtMidnight}
+                    label="자정"
+                    onChange={(checked) =>
+                      updateDailyEndTime(checked ? "24:00" : DEFAULT_END_TIME)
+                    }
+                  />
+                }
+                onChange={updateDailyEndTime}
+                value={dailyEndTime}
+              />
+            </div>
+            <div className="space-y-3">
+              <Input
+                defaultValue={30}
+                label="버퍼 타임(분)"
+                max={180}
+                min={0}
+                name="bufferTimeMinutes"
+                step={10}
+                type="number"
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <label className="flex h-11 items-center justify-center gap-2 rounded-md border border-border bg-background text-sm text-foreground">
+                  <input
+                    checked={isBufferBeforeActive}
+                    className="size-4 accent-primary"
+                    onChange={(eventChange) =>
+                      setIsBufferBeforeActive(eventChange.target.checked)
+                    }
+                    type="checkbox"
+                  />
+                  약속 전
+                </label>
+                <label className="flex h-11 items-center justify-center gap-2 rounded-md border border-border bg-background text-sm text-foreground">
+                  <input
+                    checked={isBufferAfterActive}
+                    className="size-4 accent-primary"
+                    onChange={(eventChange) =>
+                      setIsBufferAfterActive(eventChange.target.checked)
+                    }
+                    type="checkbox"
+                  />
+                  약속 후
+                </label>
+              </div>
+            </div>
           </div>
-          <TimeSelectionGrid
-            dailyEndTime={FULL_DAY_END}
-            dailyStartTime={FULL_DAY_START}
-            dateEnd={dateEnd}
-            dateStart={dateStart}
-            mode="host-availability"
-            selectedRanges={selectedRanges}
-            slotMinutes={10}
-          />
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-medium text-foreground">
-              선택 {selectedRanges.length}개
-            </p>
-            <Button
-              disabled={selectedRanges.length === 0}
-              onClick={clearSelection}
-              variant="outline"
-            >
-              <Trash2 className="size-4" aria-hidden="true" />
-              선택 초기화
-            </Button>
+        ) : (
+          <div className="space-y-4 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-primary">
+                <CalendarRange className="size-5" aria-hidden="true" />
+                <h2 className="font-serif text-2xl font-semibold">
+                  촬영 가능 시간
+                </h2>
+              </div>
+              <Button
+                disabled={selectedRanges.length === 0}
+                onClick={clearSelection}
+                size="sm"
+                variant="outline"
+              >
+                <Trash2 className="size-4" aria-hidden="true" />
+                초기화
+              </Button>
+            </div>
+            {canShowGrid ? (
+              <TimeSelectionGrid
+                activeDates={activeDates}
+                dailyEndTime={dailyEndTime}
+                dailyStartTime={dailyStartTime}
+                dateEnd={dateEnd}
+                dateStart={dateStart}
+                mode="host-availability"
+                selectedRanges={selectedRanges}
+                slotHeightRem={1.65}
+              />
+            ) : (
+              <p className="border border-border bg-muted p-4 text-sm text-muted-foreground">
+                일정과 기본 시간대를 먼저 정하면 여기에서 드래그로 가능 시간을
+                추가할 수 있습니다.
+              </p>
+            )}
           </div>
-        </div>
-      ) : null}
+        )}
+      </div>
 
       {error ? (
         <p className="rounded-md border border-danger/30 bg-red-50 px-3 py-2 text-sm text-danger">
@@ -247,22 +329,35 @@ export function EventCreateForm() {
   );
 }
 
-function DateRangePicker({
-  dateEnd,
-  dateStart,
+function ActiveDatePicker({
+  activeDates,
+  initialDateStart,
   onChange,
 }: {
-  dateEnd: string;
-  dateStart: string;
-  onChange: (dateStart: string, dateEnd: string) => void;
+  activeDates: string[];
+  initialDateStart: string;
+  onChange: (activeDates: string[]) => void;
 }) {
   const [anchorDate, setAnchorDate] = useState<string | null>(null);
-  const [monthDate, setMonthDate] = useState(() => parseDateOnly(dateStart));
+  const [dragPreviewDates, setDragPreviewDates] = useState<string[]>([]);
+  const [dragMode, setDragMode] = useState<"activate" | "deactivate" | null>(
+    null,
+  );
+  const [isMonthDialogOpen, setIsMonthDialogOpen] = useState(false);
+  const [monthDate, setMonthDate] = useState(() =>
+    parseDateOnly(initialDateStart),
+  );
   const days = useMemo(() => buildMonthDays(monthDate), [monthDate]);
+  const activeDateSet = useMemo(() => new Set(activeDates), [activeDates]);
+  const previewDateSet = useMemo(
+    () => new Set(dragPreviewDates),
+    [dragPreviewDates],
+  );
   const monthLabel = new Intl.DateTimeFormat("ko-KR", {
     month: "long",
     year: "numeric",
   }).format(monthDate);
+  const today = toDateInputValue(new Date());
 
   function moveMonth(offset: number) {
     setMonthDate((current) => {
@@ -272,15 +367,19 @@ function DateRangePicker({
     });
   }
 
-  function updateRange(nextDate: string) {
+  function goToday() {
+    setMonthDate(parseDateOnly(toDateInputValue(new Date())));
+  }
+
+  function getRangeDates(nextDate: string) {
     const start = anchorDate ?? nextDate;
+    const [from, to] = nextDate < start ? [nextDate, start] : [start, nextDate];
 
-    if (nextDate < start) {
-      onChange(nextDate, start);
-      return;
-    }
+    return buildDateList(from, to);
+  }
 
-    onChange(start, nextDate);
+  function updatePreview(nextDate: string) {
+    setDragPreviewDates(getRangeDates(nextDate));
   }
 
   function handlePointerMove(clientX: number, clientY: number) {
@@ -294,153 +393,221 @@ function DateRangePicker({
       ?.dataset.calendarDate;
 
     if (nextDate) {
-      updateRange(nextDate);
+      updatePreview(nextDate);
     }
+  }
+
+  function commitPreview() {
+    if (!dragMode) {
+      return;
+    }
+
+    const nextActiveDates = new Set(activeDates);
+
+    for (const date of dragPreviewDates) {
+      if (dragMode === "activate") {
+        nextActiveDates.add(date);
+      } else {
+        nextActiveDates.delete(date);
+      }
+    }
+
+    onChange([...nextActiveDates].sort());
+    setAnchorDate(null);
+    setDragMode(null);
+    setDragPreviewDates([]);
+  }
+
+  function cancelPreview() {
+    setAnchorDate(null);
+    setDragMode(null);
+    setDragPreviewDates([]);
   }
 
   return (
     <div className="border border-border bg-muted p-4">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <button
-          aria-label="이전 달"
-          className="inline-flex size-9 items-center justify-center rounded-md border border-border bg-background text-primary"
-          onClick={() => moveMonth(-1)}
-          type="button"
-        >
-          <ChevronLeft className="size-4" aria-hidden="true" />
-        </button>
-        <p className="font-serif text-xl font-semibold text-primary">
-          {monthLabel}
-        </p>
-        <button
-          aria-label="다음 달"
-          className="inline-flex size-9 items-center justify-center rounded-md border border-border bg-background text-primary"
-          onClick={() => moveMonth(1)}
-          type="button"
-        >
-          <ChevronRight className="size-4" aria-hidden="true" />
-        </button>
+      <div className="mb-3 grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+        <div className="flex justify-start">
+          <button
+            aria-label="이전 달"
+            className="inline-flex size-9 items-center justify-center rounded-md border border-border bg-background text-primary"
+            onClick={() => moveMonth(-1)}
+            type="button"
+          >
+            <ChevronLeft className="size-4" aria-hidden="true" />
+          </button>
+        </div>
+        <div className="flex justify-center">
+          <button
+            aria-label="연월 선택"
+            className="h-9 rounded-md border border-border bg-background px-3 font-serif text-lg font-semibold text-primary shadow-sm outline-none transition-colors hover:border-primary focus-visible:ring-2 focus-visible:ring-primary"
+            onClick={() => setIsMonthDialogOpen(true)}
+            type="button"
+          >
+            {monthLabel}
+          </button>
+        </div>
+        <div className="flex items-center justify-end gap-2">
+          <button
+            className="px-1 text-xs font-medium text-primary underline underline-offset-4 outline-none transition-colors hover:text-accent focus-visible:ring-2 focus-visible:ring-primary"
+            onClick={goToday}
+            type="button"
+          >
+            오늘
+          </button>
+          <button
+            aria-label="다음 달"
+            className="inline-flex size-9 items-center justify-center rounded-md border border-border bg-background text-primary"
+            onClick={() => moveMonth(1)}
+            type="button"
+          >
+            <ChevronRight className="size-4" aria-hidden="true" />
+          </button>
+        </div>
       </div>
       <div className="grid grid-cols-7 gap-1 text-center text-xs text-muted-foreground">
-        {["일", "월", "화", "수", "목", "금", "토"].map((weekday) => (
-          <div className="py-1" key={weekday}>
+        {["일", "월", "화", "수", "목", "금", "토"].map((weekday, index) => (
+          <div className={cn("py-1", getWeekdayTextClass(index))} key={weekday}>
             {weekday}
           </div>
         ))}
       </div>
       <div
         className="mt-1 grid grid-cols-7 gap-1"
-        onPointerCancel={() => setAnchorDate(null)}
+        onPointerCancel={cancelPreview}
         onPointerMove={(event) => handlePointerMove(event.clientX, event.clientY)}
-        onPointerUp={() => setAnchorDate(null)}
+        onPointerUp={commitPreview}
       >
         {days.map((day, index) =>
           day ? (
             <button
               className={cn(
-                "h-10 rounded-md border text-sm font-medium",
-                dateStart <= day && day <= dateEnd
+                "relative h-10 rounded-md border text-sm font-medium transition-colors",
+                getDateButtonActiveState(
+                  day,
+                  activeDateSet,
+                  previewDateSet,
+                  dragMode,
+                )
                   ? "border-primary bg-primary text-primary-foreground"
-                  : "border-border bg-background text-foreground",
+                  : cn("border-border bg-background", getWeekdayTextClass(day)),
               )}
               data-calendar-date={day}
               key={day}
               onPointerDown={(event) => {
                 event.preventDefault();
                 setAnchorDate(day);
-                onChange(day, day);
+                setDragMode(activeDateSet.has(day) ? "deactivate" : "activate");
+                setDragPreviewDates([day]);
               }}
               onPointerEnter={() => {
                 if (anchorDate) {
-                  updateRange(day);
+                  updatePreview(day);
                 }
               }}
               type="button"
             >
-              {Number(day.slice(-2))}
+              <span>{Number(day.slice(-2))}</span>
+              {day === today ? (
+                <TodayMarker
+                  isActive={getDateButtonActiveState(
+                    day,
+                    activeDateSet,
+                    previewDateSet,
+                    dragMode
+                  )}
+                />
+              ) : null}
             </button>
           ) : (
             <div key={`blank-${monthLabel}-${index}`} />
           ),
         )}
       </div>
+      {isMonthDialogOpen ? (
+        <MonthJumpDialog
+          monthDate={monthDate}
+          onClose={() => setIsMonthDialogOpen(false)}
+          onSave={(nextMonthDate) => {
+            setMonthDate(nextMonthDate);
+            setIsMonthDialogOpen(false);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
 
-function MeridiemTimeInput({
-  label,
-  onChange,
-  value,
-}: {
-  label: string;
-  onChange: (value: string) => void;
-  value: string;
-}) {
-  const parts = parseMeridiemTime(value);
-
-  function update(next: Partial<typeof parts>) {
-    onChange(formatMeridiemTime({ ...parts, ...next }));
+function getDateButtonActiveState(
+  date: string,
+  activeDateSet: Set<string>,
+  previewDateSet: Set<string>,
+  dragMode: "activate" | "deactivate" | null,
+) {
+  if (!previewDateSet.has(date) || !dragMode) {
+    return activeDateSet.has(date);
   }
 
+  return dragMode === "activate";
+}
+
+function TimePresetCheckbox({
+  checked,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
   return (
-    <div className="space-y-2">
-      <p className="text-sm font-medium text-foreground">{label}</p>
-      <div className="grid grid-cols-[5.5rem_1fr_5rem] gap-2">
-        <select
-          className="h-12 rounded-md border border-border bg-background px-2 text-base text-foreground outline-none focus:border-primary"
-          onChange={(event) =>
-            update({ period: event.target.value as "AM" | "PM" })
-          }
-          value={parts.period}
-        >
-          <option value="AM">AM</option>
-          <option value="PM">PM</option>
-        </select>
-        <Input
-          aria-label={`${label} 시`}
-          max={12}
-          min={1}
-          onChange={(event) =>
-            update({ hour: clampHour(Number(event.target.value)) })
-          }
-          type="number"
-          value={parts.hour}
-        />
-        <select
-          aria-label={`${label} 분`}
-          className="h-12 rounded-md border border-border bg-background px-2 text-base text-foreground outline-none focus:border-primary"
-          onChange={(event) => update({ minute: event.target.value })}
-          value={parts.minute}
-        >
-          {MINUTE_OPTIONS.map((minute) => (
-            <option key={minute} value={minute}>
-              {minute}
-            </option>
-          ))}
-        </select>
-      </div>
-    </div>
+    <label className="flex items-center gap-1.5 text-xs font-medium text-primary">
+      <input
+        checked={checked}
+        className="size-3.5 accent-primary"
+        onChange={(event) => onChange(event.target.checked)}
+        type="checkbox"
+      />
+      {label}
+    </label>
   );
 }
 
-function buildDefaultAvailableRanges(
-  dateStart: string,
-  dateEnd: string,
-  dailyStartTime: string,
-  dailyEndTime: string,
-) {
-  return getEventDays(dateStart, dateEnd).map<SelectedTimeRange>((day) => {
-    const startAt = toLocalIsoDateTime(day.date, dailyStartTime);
-    const endAt = toLocalIsoDateTime(day.date, dailyEndTime);
+function TodayMarker({ isActive }: { isActive: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        "absolute bottom-1 left-1/2 size-1.5 -translate-x-1/2 rounded-full",
+        isActive ? "bg-primary-foreground" : "bg-primary"
+      )}
+    />
+  );
+}
 
-    return {
-      availability: "available",
-      endAt,
-      id: `available:${startAt}:${endAt}`,
-      startAt,
-    };
-  });
+function isZeroHour(value: string) {
+  return value.startsWith("00:00");
+}
+
+function isEndMidnight(value: string) {
+  return value.startsWith("24:00");
+}
+
+function normalizeDailyEndTime(value: string) {
+  return value.startsWith("00:00") ? "24:00" : value;
+}
+
+function buildDateList(dateStart: string, dateEnd: string) {
+  const dates: string[] = [];
+  const current = new Date(`${dateStart}T00:00:00`);
+  const end = new Date(`${dateEnd}T00:00:00`);
+
+  while (current.getTime() <= end.getTime()) {
+    dates.push(toDateInputValue(current));
+    current.setDate(current.getDate() + 1);
+  }
+
+  return dates;
 }
 
 function buildMonthDays(monthDate: Date) {
@@ -458,49 +625,6 @@ function buildMonthDays(monthDate: Date) {
   }
 
   return days;
-}
-
-function parseMeridiemTime(value: string) {
-  const [hourText, minuteText = "00"] = value.split(":");
-  const hour24 = Number(hourText);
-  const period: "AM" | "PM" = hour24 >= 12 ? "PM" : "AM";
-  const hour = hour24 % 12 === 0 ? 12 : hour24 % 12;
-
-  return {
-    hour,
-    minute: MINUTE_OPTIONS.includes(minuteText) ? minuteText : "00",
-    period,
-  };
-}
-
-function formatMeridiemTime({
-  hour,
-  minute,
-  period,
-}: {
-  hour: number;
-  minute: string;
-  period: "AM" | "PM";
-}) {
-  const normalizedHour = clampHour(hour);
-  const hour24 =
-    period === "AM"
-      ? normalizedHour === 12
-        ? 0
-        : normalizedHour
-      : normalizedHour === 12
-        ? 12
-        : normalizedHour + 12;
-
-  return `${String(hour24).padStart(2, "0")}:${minute}`;
-}
-
-function clampHour(value: number) {
-  if (Number.isNaN(value)) {
-    return 1;
-  }
-
-  return Math.min(Math.max(value, 1), 12);
 }
 
 function parseDateOnly(value: string) {

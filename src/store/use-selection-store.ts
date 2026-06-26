@@ -19,6 +19,7 @@ export type DraftTimeRange = TimeRange & {
 type BeginSelectionInput = {
   anchorTimestamp: number;
   draftAvailability: TimeRangeAvailability;
+  draftPreviewOperation?: SelectionOperation;
   draftRange: TimeRange;
   draftRanges?: DraftTimeRange[];
   operation: SelectionOperation;
@@ -30,6 +31,7 @@ type SelectionState = {
   anchorTimestamp: number | null;
   draftAvailability: TimeRangeAvailability | null;
   draftOperation: SelectionOperation;
+  draftPreviewOperation: SelectionOperation;
   draftRange: TimeRange | null;
   draftRanges: DraftTimeRange[];
   isDragging: boolean;
@@ -39,9 +41,15 @@ type SelectionState = {
   cancelSelection: () => void;
   clearSelection: () => void;
   commitDraftRange: (behavior?: CommitBehavior) => void;
+  moveSelectedRange: (rangeId: string, direction: "down" | "up") => void;
   removeSelectedRange: (rangeId: string) => void;
   setMode: (mode: TimeSelectionMode) => void;
   setSelectedRanges: (ranges: SelectedTimeRange[]) => void;
+  updateSelectedRange: (
+    rangeId: string,
+    range: TimeRange,
+    availability: TimeRangeAvailability,
+  ) => void;
   updateDraftRange: (
     range: TimeRange,
     availability: TimeRangeAvailability,
@@ -54,6 +62,7 @@ export const useSelectionStore = create<SelectionState>((set) => ({
   anchorTimestamp: null,
   draftAvailability: null,
   draftOperation: "add",
+  draftPreviewOperation: "add",
   draftRange: null,
   draftRanges: [],
   isDragging: false,
@@ -62,6 +71,7 @@ export const useSelectionStore = create<SelectionState>((set) => ({
   beginSelection: ({
     anchorTimestamp,
     draftAvailability,
+    draftPreviewOperation,
     draftRange,
     draftRanges,
     operation,
@@ -72,6 +82,7 @@ export const useSelectionStore = create<SelectionState>((set) => ({
       anchorTimestamp,
       draftAvailability,
       draftOperation: operation,
+      draftPreviewOperation: draftPreviewOperation ?? operation,
       draftRange,
       draftRanges: draftRanges ?? [{ ...draftRange, availability: draftAvailability }],
       isDragging: true,
@@ -82,6 +93,7 @@ export const useSelectionStore = create<SelectionState>((set) => ({
       anchorTimestamp: null,
       draftAvailability: null,
       draftOperation: "add",
+      draftPreviewOperation: "add",
       draftRange: null,
       draftRanges: [],
       isDragging: false,
@@ -92,6 +104,7 @@ export const useSelectionStore = create<SelectionState>((set) => ({
       anchorTimestamp: null,
       draftAvailability: null,
       draftOperation: "add",
+      draftPreviewOperation: "add",
       draftRange: null,
       draftRanges: [],
       isDragging: false,
@@ -115,6 +128,7 @@ export const useSelectionStore = create<SelectionState>((set) => ({
           anchorTimestamp: null,
           draftAvailability: null,
           draftOperation: "add",
+          draftPreviewOperation: "add",
           draftRange: null,
           draftRanges: [],
           isDragging: false,
@@ -126,15 +140,10 @@ export const useSelectionStore = create<SelectionState>((set) => ({
           ? committableRanges.map((range) =>
               createSelectedTimeRange(range, range.availability),
             )
-          : committableRanges.reduce(
-              (selectedRanges, range) =>
-                applySelectedTimeRange(
-                  selectedRanges,
-                  range,
-                  range.availability,
-                  state.draftOperation,
-                ),
+          : applySelectionToEditableRanges(
               state.selectedRanges,
+              committableRanges,
+              state.draftOperation,
             );
 
       return {
@@ -142,6 +151,7 @@ export const useSelectionStore = create<SelectionState>((set) => ({
         anchorTimestamp: null,
         draftAvailability: null,
         draftOperation: "add",
+        draftPreviewOperation: "add",
         draftRange: null,
         draftRanges: [],
         isDragging: false,
@@ -152,8 +162,41 @@ export const useSelectionStore = create<SelectionState>((set) => ({
     set((state) => ({
       selectedRanges: state.selectedRanges.filter((range) => range.id !== rangeId),
     })),
+  moveSelectedRange: (rangeId, direction) =>
+    set((state) => {
+      const index = state.selectedRanges.findIndex((range) => range.id === rangeId);
+
+      if (index === -1) {
+        return state;
+      }
+
+      const nextIndex = direction === "up" ? index - 1 : index + 1;
+
+      if (nextIndex < 0 || nextIndex >= state.selectedRanges.length) {
+        return state;
+      }
+
+      const selectedRanges = [...state.selectedRanges];
+      const [range] = selectedRanges.splice(index, 1);
+      selectedRanges.splice(nextIndex, 0, range);
+
+      return { selectedRanges };
+    }),
   setMode: (mode) => set({ mode }),
   setSelectedRanges: (selectedRanges) => set({ selectedRanges }),
+  updateSelectedRange: (rangeId, range, availability) =>
+    set((state) => ({
+      selectedRanges: state.selectedRanges.map((selectedRange) =>
+        selectedRange.id === rangeId
+          ? {
+              ...selectedRange,
+              availability,
+              endAt: range.endAt,
+              startAt: range.startAt,
+            }
+          : selectedRange,
+      ),
+    })),
   updateDraftRange: (draftRange, draftAvailability) =>
     set({
       draftAvailability,
@@ -190,4 +233,25 @@ function createSelectionId(range: TimeRange) {
   }
 
   return `${range.startAt}-${range.endAt}-${Date.now()}-${Math.random()}`;
+}
+
+function applySelectionToEditableRanges(
+  selectedRanges: SelectedTimeRange[],
+  committableRanges: DraftTimeRange[],
+  operation: SelectionOperation,
+) {
+  const lockedRanges = selectedRanges.filter((range) => range.isConfirmed);
+  const editableRanges = selectedRanges.filter((range) => !range.isConfirmed);
+  const nextEditableRanges = committableRanges.reduce(
+    (currentRanges, range) =>
+      applySelectedTimeRange(
+        currentRanges,
+        range,
+        range.availability,
+        operation,
+      ),
+    editableRanges,
+  );
+
+  return [...lockedRanges, ...nextEditableRanges];
 }

@@ -25,6 +25,7 @@ type UseTimeSelectionOptions = TimeGridConfig & {
   allowWaitlist?: boolean;
   blockedRanges?: TimeRange[];
   calendarGridRef?: RefObject<HTMLElement | null>;
+  commitOperation?: "add" | "remove";
   dailyEndTime?: string;
   dailyStartTime?: string;
   dates?: string[];
@@ -32,6 +33,7 @@ type UseTimeSelectionOptions = TimeGridConfig & {
   gridRef: RefObject<HTMLElement | null>;
   mode?: TimeSelectionMode;
   occupiedRanges?: TimeRange[];
+  operationReferenceRanges?: TimeRange[];
   selectionBehavior?: SelectionBehavior;
 };
 
@@ -39,6 +41,7 @@ export function useTimeSelection({
   allowWaitlist = false,
   blockedRanges = [],
   calendarGridRef,
+  commitOperation,
   dailyEndTime,
   dailyStartTime,
   dates,
@@ -49,6 +52,7 @@ export function useTimeSelection({
   minDurationMinutes,
   mode,
   occupiedRanges = [],
+  operationReferenceRanges,
   selectionBehavior = "append",
   slotMinutes,
 }: UseTimeSelectionOptions) {
@@ -58,6 +62,9 @@ export function useTimeSelection({
   const cancelSelection = useSelectionStore((state) => state.cancelSelection);
   const commitDraftRange = useSelectionStore((state) => state.commitDraftRange);
   const draftAvailability = useSelectionStore((state) => state.draftAvailability);
+  const draftPreviewOperation = useSelectionStore(
+    (state) => state.draftPreviewOperation,
+  );
   const draftRange = useSelectionStore((state) => state.draftRange);
   const draftRanges = useSelectionStore((state) => state.draftRanges);
   const isDragging = useSelectionStore((state) => state.isDragging);
@@ -94,15 +101,18 @@ export function useTimeSelection({
         timestamp,
         config,
       );
-      const availability = getRangeAvailability(range, {
-        allowWaitlist,
-        blockedRanges,
-        occupiedRanges,
-      });
+      const availability =
+        mode === "host-availability"
+          ? "available"
+          : getRangeAvailability(range, {
+              allowWaitlist,
+              blockedRanges,
+              occupiedRanges,
+            });
 
       return { availability, range };
     },
-    [allowWaitlist, blockedRanges, config, gridRef, occupiedRanges],
+    [allowWaitlist, blockedRanges, config, gridRef, mode, occupiedRanges],
   );
 
   const getDraftRangesFromPointer = useCallback(
@@ -157,11 +167,14 @@ export function useTimeSelection({
 
           return {
             ...range,
-            availability: getRangeAvailability(range, {
-              allowWaitlist,
-              blockedRanges,
-              occupiedRanges,
-            }),
+            availability:
+              mode === "host-availability"
+                ? "available"
+                : getRangeAvailability(range, {
+                    allowWaitlist,
+                    blockedRanges,
+                    occupiedRanges,
+                  }),
           };
         });
     },
@@ -175,6 +188,7 @@ export function useTimeSelection({
       dayIndex,
       getDraftFromPointer,
       gridStartAt,
+      mode,
       occupiedRanges,
     ],
   );
@@ -214,26 +228,34 @@ export function useTimeSelection({
       event.currentTarget.setPointerCapture(event.pointerId);
       event.preventDefault();
 
+      const previewOperation = isTimestampInRanges(
+        timestamp,
+        operationReferenceRanges ?? selectedRanges,
+      )
+        ? "remove"
+        : "add";
+
       beginSelection({
         anchorTimestamp: timestamp,
         draftAvailability: draft.availability,
+        draftPreviewOperation: previewOperation,
         draftRange: {
           endAt: draft.endAt,
           startAt: draft.startAt,
         },
         draftRanges: draftRangesFromPointer,
-        operation: isTimestampInRanges(timestamp, selectedRanges)
-          ? "remove"
-          : "add",
+        operation: commitOperation ?? previewOperation,
         pointerId: event.pointerId,
       });
     },
     [
       beginSelection,
+      commitOperation,
       config,
       getDraftRangesFromPointer,
       gridRef,
       mode,
+      operationReferenceRanges,
       selectedRanges,
       setMode,
     ],
@@ -315,6 +337,7 @@ export function useTimeSelection({
 
   return {
     draftAvailability: draftAvailability ?? ("available" as TimeRangeAvailability),
+    draftOperation: draftPreviewOperation,
     draftRange,
     draftRanges,
     gridProps: {

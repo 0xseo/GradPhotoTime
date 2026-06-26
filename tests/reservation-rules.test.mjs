@@ -28,11 +28,11 @@ describe("reservation edit capabilities", () => {
     });
   });
 
-  it("allows approved reservations to edit people and cancel, but not slots", () => {
+  it("allows approved reservations to edit people, add pending slots, and cancel", () => {
     assert.deepEqual(getReservationEditCapabilities("APPROVED"), {
       canCancel: true,
       canEditPeople: true,
-      canEditSlots: false,
+      canEditSlots: true,
     });
   });
 

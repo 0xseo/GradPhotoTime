@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { CalendarShell } from "@/components/calendar/calendar-shell";
-import { ReservationCodeEntry } from "@/components/guest/event-code-entry";
+import { AccessCodeEntry } from "@/components/guest/access-code-entry";
 import { GuestReservationShell } from "@/components/guest/guest-reservation-shell";
 import {
   listEventActiveDates,
@@ -67,7 +67,7 @@ export default async function EventPage({ params }: EventPageProps) {
         </p>
       ) : null}
       <div className="mb-5 max-w-xl">
-        <ReservationCodeEntry />
+        <AccessCodeEntry />
       </div>
       {scheduleResult.ok && activeDatesResult.ok && bufferOverridesResult.ok ? (
         <GuestReservationShell

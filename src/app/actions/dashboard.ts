@@ -26,18 +26,37 @@ type DashboardReservationBase = Pick<
 
 export type DashboardSlot = Pick<
   Tables<"reservation_slots">,
-  "end_at" | "id" | "is_confirmed" | "reservation_id" | "start_at"
+  | "confirmed_end_at"
+  | "confirmed_start_at"
+  | "end_at"
+  | "id"
+  | "is_confirmed"
+  | "priority_order"
+  | "reservation_id"
+  | "start_at"
+>;
+
+export type DashboardParticipant = Pick<
+  Tables<"reservation_participants">,
+  | "created_at"
+  | "guest_name"
+  | "id"
+  | "is_creator"
+  | "reservation_id"
+  | "user_id"
 >;
 
 export type DashboardHostedEvent = DashboardEventBase & {
   approvedCount: number;
   confirmedSlots: DashboardSlot[];
+  participants: DashboardParticipant[];
   pendingCount: number;
   pendingSlots: DashboardSlot[];
 };
 
 export type DashboardGuestReservation = DashboardReservationBase & {
   event: DashboardEventBase | null;
+  participants: DashboardParticipant[];
   slots: DashboardSlot[];
 };
 
@@ -91,15 +110,27 @@ export async function getHomeDashboard(): Promise<
       admin,
       guestReservations.map((reservation) => reservation.id),
     );
+    const participants = await listParticipantsForReservationIds(admin, [
+      ...hostedReservations.map((reservation) => reservation.id),
+      ...guestReservations.map((reservation) => reservation.id),
+    ]);
 
     return actionOk({
       hostedEvents: hostedEvents.map((event) =>
-        buildHostedEventSummary(event, hostedReservations, hostedSlots),
+        buildHostedEventSummary(
+          event,
+          hostedReservations,
+          hostedSlots,
+          participants,
+        ),
       ),
       reservations: guestReservations.map((reservation) => ({
         ...reservation,
         event:
           guestEvents.find((event) => event.id === reservation.event_id) ?? null,
+        participants: participants.filter(
+          (participant) => participant.reservation_id === reservation.id,
+        ),
         slots: guestSlots.filter(
           (slot) => slot.reservation_id === reservation.id,
         ),
@@ -120,6 +151,7 @@ function buildHostedEventSummary(
   event: DashboardEventBase,
   reservations: DashboardReservationBase[],
   slots: DashboardSlot[],
+  participants: DashboardParticipant[],
 ): DashboardHostedEvent {
   const eventReservations = reservations.filter(
     (reservation) => reservation.event_id === event.id,
@@ -135,6 +167,9 @@ function buildHostedEventSummary(
       (reservation) => reservation.status === "APPROVED",
     ).length,
     confirmedSlots: eventSlots.filter((slot) => slot.is_confirmed),
+    participants: participants.filter((participant) =>
+      reservationById.has(participant.reservation_id),
+    ),
     pendingCount: eventReservations.filter(
       (reservation) => reservation.status === "PENDING",
     ).length,
@@ -142,6 +177,30 @@ function buildHostedEventSummary(
       (slot) => reservationById.get(slot.reservation_id)?.status === "PENDING",
     ),
   };
+}
+
+async function listParticipantsForReservationIds(
+  admin: ReturnType<typeof createSupabaseAdminClient>,
+  reservationIds: string[],
+) {
+  const uniqueReservationIds = [...new Set(reservationIds)];
+
+  if (uniqueReservationIds.length === 0) {
+    return [];
+  }
+
+  const { data, error } = await admin
+    .from("reservation_participants")
+    .select("id,reservation_id,user_id,guest_name,is_creator,created_at")
+    .in("reservation_id", uniqueReservationIds)
+    .order("is_creator", { ascending: false })
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data ?? [];
 }
 
 async function listHostedEvents(
@@ -247,8 +306,11 @@ async function listSlotsForReservationIds(
 
   const { data, error } = await admin
     .from("reservation_slots")
-    .select("id,reservation_id,start_at,end_at,is_confirmed")
+    .select(
+      "id,reservation_id,start_at,end_at,confirmed_start_at,confirmed_end_at,is_confirmed,priority_order",
+    )
     .in("reservation_id", reservationIds)
+    .order("priority_order", { ascending: true })
     .order("start_at", { ascending: true });
 
   if (error) {

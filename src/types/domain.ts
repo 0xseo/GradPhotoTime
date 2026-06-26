@@ -18,6 +18,9 @@ export type TimeRange = {
 export type SelectedTimeRange = TimeRange & {
   id: string;
   availability: TimeRangeAvailability;
+  isConfirmed?: boolean;
+  isConfirmedCandidate?: boolean;
+  priorityOrder?: number;
 };
 
 export type ParticipantDraft = {

@@ -188,29 +188,38 @@ export type Database = {
       }
       reservation_slots: {
         Row: {
+          confirmed_end_at: string | null
+          confirmed_start_at: string | null
           created_at: string
           end_at: string
           event_id: string
           id: string
           is_confirmed: boolean
+          priority_order: number
           reservation_id: string
           start_at: string
         }
         Insert: {
+          confirmed_end_at?: string | null
+          confirmed_start_at?: string | null
           created_at?: string
           end_at: string
           event_id: string
           id?: string
           is_confirmed?: boolean
+          priority_order?: number
           reservation_id: string
           start_at: string
         }
         Update: {
+          confirmed_end_at?: string | null
+          confirmed_start_at?: string | null
           created_at?: string
           end_at?: string
           event_id?: string
           id?: string
           is_confirmed?: boolean
+          priority_order?: number
           reservation_id?: string
           start_at?: string
         }

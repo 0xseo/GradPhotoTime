@@ -13,7 +13,7 @@ export default async function NewEventPage() {
 
   return (
     <main className="min-h-dvh bg-background">
-      <section className="mx-auto flex min-h-dvh w-full max-w-3xl flex-col px-5 py-6">
+      <section className="mx-auto flex min-h-dvh w-full max-w-[92rem] flex-col px-5 py-6 sm:px-8">
         <AppHeader />
         <div className="mb-8 mt-8 flex items-center gap-3 text-primary">
           <CalendarDays className="size-6" aria-hidden="true" />

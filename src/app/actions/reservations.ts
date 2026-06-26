@@ -13,6 +13,7 @@ import {
   getCandidateSlotBlockReason,
   type CandidateSlotBlockReason,
 } from "@/lib/reservations/rules";
+import { getSlotDisplayRange } from "@/lib/reservations/slots";
 import {
   buildBufferTimeRangeItems,
   getBufferOverrideKey,
@@ -39,7 +40,13 @@ export type ReservationParticipant = Pick<
 
 export type ReservationSlot = Pick<
   Tables<"reservation_slots">,
-  "end_at" | "id" | "is_confirmed" | "start_at"
+  | "confirmed_end_at"
+  | "confirmed_start_at"
+  | "end_at"
+  | "id"
+  | "is_confirmed"
+  | "priority_order"
+  | "start_at"
 >;
 
 export type PublicReservationGroup = Pick<
@@ -212,19 +219,43 @@ export async function reviewReservation(
       return actionError("취소된 예약은 처리할 수 없습니다.");
     }
 
-    if (payload.status === "REJECTED" || payload.status === "PENDING") {
-      const { error: slotsError } = await admin
-        .from("reservation_slots")
-        .update({ is_confirmed: false })
-        .eq("reservation_id", reservation.id);
-
-      if (slotsError) {
-        return actionError(slotsError.message);
-      }
+    if (payload.status === "REJECTED") {
+      await clearReservationConfirmedSlots(admin, reservation.id);
 
       const { error: reservationError } = await admin
         .from("reservations")
         .update({ status: payload.status })
+        .eq("id", reservation.id);
+
+      if (reservationError) {
+        return actionError(reservationError.message);
+      }
+    } else if (payload.status === "PENDING") {
+      if (payload.confirmedSlotId) {
+        const { error: slotError } = await admin
+          .from("reservation_slots")
+          .update({
+            confirmed_end_at: null,
+            confirmed_start_at: null,
+            is_confirmed: false,
+          })
+          .eq("id", payload.confirmedSlotId)
+          .eq("reservation_id", reservation.id);
+
+        if (slotError) {
+          return actionError(slotError.message);
+        }
+      } else {
+        await clearReservationConfirmedSlots(admin, reservation.id);
+      }
+
+      const confirmedSlots = await getConfirmedReservationSlots(
+        admin,
+        reservation.id,
+      );
+      const { error: reservationError } = await admin
+        .from("reservations")
+        .update({ status: confirmedSlots.length > 0 ? "APPROVED" : "PENDING" })
         .eq("id", reservation.id);
 
       if (reservationError) {
@@ -243,18 +274,13 @@ export async function reviewReservation(
 
       await assertSlotCanBeConfirmed(admin, event, slot, reservation.id);
 
-      const { error: clearError } = await admin
-        .from("reservation_slots")
-        .update({ is_confirmed: false })
-        .eq("reservation_id", reservation.id);
-
-      if (clearError) {
-        return actionError(clearError.message);
-      }
-
       const { error: slotError } = await admin
         .from("reservation_slots")
-        .update({ is_confirmed: true })
+        .update({
+          confirmed_end_at: null,
+          confirmed_start_at: null,
+          is_confirmed: true,
+        })
         .eq("id", slot.id)
         .eq("reservation_id", reservation.id);
 
@@ -322,27 +348,28 @@ export async function updateConfirmedReservationSlotTime(
     await assertSlotCanBeConfirmed(
       admin,
       event,
-      {
-        ...slot,
-        end_at: timeRange.endAt,
-        start_at: timeRange.startAt,
-      },
+      slot,
       slot.reservation_id,
+      timeRange,
     );
 
     const { data, error } = await admin
       .from("reservation_slots")
       .update({
-        end_at: timeRange.endAt,
-        start_at: timeRange.startAt,
+        confirmed_end_at: timeRange.endAt,
+        confirmed_start_at: timeRange.startAt,
       })
       .eq("id", slot.id)
-      .select("id,start_at,end_at,is_confirmed")
+      .select(
+        "id,start_at,end_at,confirmed_start_at,confirmed_end_at,is_confirmed,priority_order",
+      )
       .single();
 
     if (error || !data) {
       return actionError("확정 일정을 저장할 수 없습니다.");
     }
+
+    await moveCustomBufferOverridesForSlot(admin, event, slot, timeRange);
 
     revalidatePath(`/host/events/${event.id}`);
     revalidatePath(`/event/${event.event_code}`);
@@ -395,9 +422,10 @@ export async function createReservation(
       reservation.id,
       currentUserId,
     );
-    const slots = payload.requestedSlots.map((slot) => ({
+    const slots = payload.requestedSlots.map((slot, index) => ({
       end_at: slot.endAt,
       event_id: event.id,
+      priority_order: index + 1,
       reservation_id: reservation.id,
       start_at: slot.startAt,
     }));
@@ -471,10 +499,6 @@ export async function updateReservationGroup(
       return actionError("예약 비밀번호가 일치하지 않습니다.");
     }
 
-    if (reservation.status === "APPROVED" && payload.requestedSlots) {
-      return actionError("승인된 예약의 시간 후보는 변경할 수 없습니다.");
-    }
-
     const effectiveHeadcount = payload.headcount ?? reservation.headcount;
 
     if (
@@ -529,21 +553,52 @@ export async function updateReservationGroup(
     }
 
     if (payload.requestedSlots) {
-      const { error: deleteError } = await supabase
-        .from("reservation_slots")
-        .delete()
-        .eq("reservation_id", reservation.id);
+      const confirmedSlots =
+        reservation.status === "APPROVED"
+          ? await getConfirmedReservationSlots(supabase, reservation.id)
+          : [];
+      const { error: deleteError } =
+        reservation.status === "APPROVED"
+          ? await supabase
+              .from("reservation_slots")
+              .delete()
+              .eq("reservation_id", reservation.id)
+              .eq("is_confirmed", false)
+          : await supabase
+              .from("reservation_slots")
+              .delete()
+              .eq("reservation_id", reservation.id);
 
       if (deleteError) {
         return actionError(deleteError.message);
       }
 
+      const requestedSlots = payload.requestedSlots.filter(
+        (slot) => !confirmedSlots.some((confirmedSlot) =>
+          isSameSlotCandidateRange(confirmedSlot, slot),
+        ),
+      );
+
+      if (requestedSlots.length === 0) {
+        const reservationGroup = await getReservationGroupById(reservation.id);
+        const eventCode = await getEventCodeById(reservation.event_id);
+
+        revalidateReservationPaths(
+          reservation.reservation_access_code,
+          eventCode,
+          reservation.event_id,
+        );
+
+        return actionOk({ reservation: reservationGroup });
+      }
+
       const { error: insertError } = await supabase
         .from("reservation_slots")
         .insert(
-          payload.requestedSlots.map((slot) => ({
+          requestedSlots.map((slot, index) => ({
             end_at: slot.endAt,
             event_id: reservation.event_id,
+            priority_order: confirmedSlots.length + index + 1,
             reservation_id: reservation.id,
             start_at: slot.startAt,
           })),
@@ -608,7 +663,11 @@ export async function cancelReservationGroup(
 
     const { error: slotsError } = await supabase
       .from("reservation_slots")
-      .update({ is_confirmed: false })
+      .update({
+        confirmed_end_at: null,
+        confirmed_start_at: null,
+        is_confirmed: false,
+      })
       .eq("reservation_id", reservation.id);
 
     if (slotsError) {
@@ -685,8 +744,8 @@ function parseUpdateReservationGroupInput(input: UpdateReservationGroupInput) {
     throw new Error("participants cannot exceed headcount.");
   }
 
-  if (requestedSlots && (requestedSlots.length === 0 || requestedSlots.length > 20)) {
-    throw new Error("requestedSlots must include 1-20 time ranges.");
+  if (requestedSlots && requestedSlots.length > 20) {
+    throw new Error("requestedSlots can include up to 20 time ranges.");
   }
 
   return {
@@ -819,8 +878,11 @@ async function getReservationGroupsForEvent(
 
   const { data: slots, error: slotsError } = await supabase
     .from("reservation_slots")
-    .select("id,reservation_id,start_at,end_at,is_confirmed")
+    .select(
+      "id,reservation_id,start_at,end_at,confirmed_start_at,confirmed_end_at,is_confirmed,priority_order",
+    )
     .in("reservation_id", reservationIds)
+    .order("priority_order", { ascending: true })
     .order("start_at", { ascending: true });
 
   if (slotsError) {
@@ -843,9 +905,12 @@ async function getReservationGroupsForEvent(
       slots
         ?.filter((slot) => slot.reservation_id === reservation.id)
         .map((slot) => ({
+          confirmed_end_at: slot.confirmed_end_at,
+          confirmed_start_at: slot.confirmed_start_at,
           end_at: slot.end_at,
           id: slot.id,
           is_confirmed: slot.is_confirmed,
+          priority_order: slot.priority_order,
           start_at: slot.start_at,
         })) ?? [],
   }));
@@ -893,8 +958,11 @@ async function getEventScheduleSlotsForEvent(
 ) {
   const { data: slots, error: slotsError } = await supabase
     .from("reservation_slots")
-    .select("id,reservation_id,start_at,end_at,is_confirmed")
+    .select(
+      "id,reservation_id,start_at,end_at,confirmed_start_at,confirmed_end_at,is_confirmed,priority_order",
+    )
     .eq("event_id", eventId)
+    .order("priority_order", { ascending: true })
     .order("start_at", { ascending: true });
 
   if (slotsError) {
@@ -944,10 +1012,13 @@ async function getEventScheduleSlotsForEvent(
 
     return [
       {
+        confirmed_end_at: slot.confirmed_end_at,
+        confirmed_start_at: slot.confirmed_start_at,
         end_at: slot.end_at,
         headcount: reservation?.headcount ?? 1,
         id: slot.id,
         is_confirmed: slot.is_confirmed,
+        priority_order: slot.priority_order,
         participantNames:
           participants
             ?.filter(
@@ -990,8 +1061,11 @@ async function getReservationGroupById(reservationId: string) {
 
   const { data: slots, error: slotsError } = await supabase
     .from("reservation_slots")
-    .select("id,start_at,end_at,is_confirmed")
+    .select(
+      "id,start_at,end_at,confirmed_start_at,confirmed_end_at,is_confirmed,priority_order",
+    )
     .eq("reservation_id", reservation.id)
+    .order("priority_order", { ascending: true })
     .order("start_at", { ascending: true });
 
   if (slotsError) {
@@ -1022,6 +1096,48 @@ async function getReservationSlot(
   }
 
   return data;
+}
+
+async function getConfirmedReservationSlots(
+  supabase: AdminSupabaseClient,
+  reservationId: string,
+) {
+  const { data, error } = await supabase
+    .from("reservation_slots")
+    .select("*")
+    .eq("reservation_id", reservationId)
+    .eq("is_confirmed", true);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data ?? [];
+}
+
+async function clearReservationConfirmedSlots(
+  supabase: AdminSupabaseClient,
+  reservationId: string,
+) {
+  const { error } = await supabase
+    .from("reservation_slots")
+    .update({
+      confirmed_end_at: null,
+      confirmed_start_at: null,
+      is_confirmed: false,
+    })
+    .eq("reservation_id", reservationId);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+}
+
+function isSameSlotCandidateRange(
+  slot: Pick<Tables<"reservation_slots">, "end_at" | "start_at">,
+  range: TimeRange,
+) {
+  return slot.start_at === range.startAt && slot.end_at === range.endAt;
 }
 
 async function getHostEventContext(eventId: string) {
@@ -1063,11 +1179,9 @@ async function assertSlotCanBeConfirmed(
   >,
   slot: Tables<"reservation_slots">,
   reservationId: string,
+  overrideRange?: TimeRange,
 ) {
-  const slotRange = {
-    endAt: slot.end_at,
-    startAt: slot.start_at,
-  };
+  const slotRange = overrideRange ?? getSlotDisplayRange(slot);
   const { data: timeBlocks, error: timeBlocksError } = await supabase
     .from("time_blocks")
     .select("start_at,end_at,type")
@@ -1079,7 +1193,9 @@ async function assertSlotCanBeConfirmed(
 
   const { data: confirmedSlots, error: confirmedSlotsError } = await supabase
     .from("reservation_slots")
-    .select("id,reservation_id,start_at,end_at")
+    .select(
+      "id,reservation_id,start_at,end_at,confirmed_start_at,confirmed_end_at,is_confirmed",
+    )
     .eq("event_id", event.id)
     .eq("is_confirmed", true)
     .neq("reservation_id", reservationId);
@@ -1108,17 +1224,15 @@ async function assertSlotCanBeConfirmed(
       override,
     ]) ?? [],
   );
+  const confirmedSlotRanges =
+    confirmedSlots?.map((confirmedSlot) => ({
+      ...getSlotDisplayRange(confirmedSlot),
+      id: confirmedSlot.id,
+    })) ?? [];
   const confirmedOrBufferRanges: TimeRange[] = [
-    ...(confirmedSlots?.map((confirmedSlot) => ({
-      endAt: confirmedSlot.end_at,
-      startAt: confirmedSlot.start_at,
-    })) ?? []),
+    ...confirmedSlotRanges.map(({ endAt, startAt }) => ({ endAt, startAt })),
     ...buildBufferTimeRangeItems(
-      confirmedSlots?.map((confirmedSlot) => ({
-        endAt: confirmedSlot.end_at,
-        id: confirmedSlot.id,
-        startAt: confirmedSlot.start_at,
-      })) ?? [],
+      confirmedSlotRanges,
       event.buffer_time_minutes,
       {
         afterActive: true,
@@ -1149,10 +1263,7 @@ async function assertSlotCanBeConfirmed(
     candidate: slotRange,
     confirmedOrBufferRanges,
     confirmedRanges:
-      confirmedSlots?.map((confirmedSlot) => ({
-        endAt: confirmedSlot.end_at,
-        startAt: confirmedSlot.start_at,
-      })) ?? [],
+      confirmedSlotRanges.map(({ endAt, startAt }) => ({ endAt, startAt })),
     timeBlocks:
       timeBlocks?.map((block) => ({
         endAt: block.end_at,
@@ -1161,9 +1272,76 @@ async function assertSlotCanBeConfirmed(
       })) ?? [],
   });
 
-  if (blockReason) {
+  if (blockReason && blockReason !== "OUTSIDE_AVAILABLE") {
     throw new Error(getCandidateSlotBlockMessage(blockReason));
   }
+}
+
+async function moveCustomBufferOverridesForSlot(
+  supabase: AdminSupabaseClient,
+  event: Pick<Tables<"events">, "buffer_time_minutes" | "id">,
+  slot: Tables<"reservation_slots">,
+  nextRange: TimeRange,
+) {
+  const defaultDuration = event.buffer_time_minutes * 60_000;
+
+  if (defaultDuration <= 0) {
+    return;
+  }
+
+  const { data: overrides, error } = await supabase
+    .from("event_buffer_overrides")
+    .select("id,side,is_active,custom_start_at,custom_end_at")
+    .eq("event_id", event.id)
+    .eq("reservation_slot_id", slot.id);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const updates =
+    overrides
+      ?.filter((override) => override.is_active)
+      .map((override) => {
+        const customDuration =
+          override.custom_start_at && override.custom_end_at
+            ? new Date(override.custom_end_at).getTime() -
+              new Date(override.custom_start_at).getTime()
+            : defaultDuration;
+        const duration =
+          customDuration > 0
+            ? Math.min(customDuration, defaultDuration)
+            : defaultDuration;
+
+        if (override.side === "BEFORE") {
+          const customEndAt = nextRange.startAt;
+
+          return supabase
+            .from("event_buffer_overrides")
+            .update({
+              custom_end_at: customEndAt,
+              custom_start_at: new Date(
+                new Date(customEndAt).getTime() - duration,
+              ).toISOString(),
+            })
+            .eq("id", override.id);
+        }
+
+        const customStartAt = nextRange.endAt;
+
+        return supabase
+          .from("event_buffer_overrides")
+          .update({
+            custom_end_at: new Date(
+              new Date(customStartAt).getTime() + duration,
+            ).toISOString(),
+            custom_start_at: customStartAt,
+          })
+          .eq("id", override.id);
+      })
+      .filter(Boolean) ?? [];
+
+  await Promise.all(updates);
 }
 
 function getCandidateSlotBlockMessage(reason: CandidateSlotBlockReason) {
