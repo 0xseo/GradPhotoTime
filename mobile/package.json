@@ -2,18 +2,20 @@
   "name": "grad-photo-time-mobile",
   "version": "0.1.0",
   "private": true,
-  "main": "App.tsx",
+  "main": "index.ts",
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
+    "android:local": "EXPO_OFFLINE=1 expo start --android --localhost -c",
     "ios": "expo start --ios",
+    "ios:local": "EXPO_OFFLINE=1 expo start --ios --localhost -c",
     "web": "expo start --web"
   },
   "dependencies": {
     "expo": "latest",
-    "react": "latest",
-    "react-native": "latest",
-    "react-native-webview": "latest"
+    "react": "19.2.3",
+    "react-native": "0.85.3",
+    "react-native-safe-area-context": "~5.7.0"
   },
   "devDependencies": {
     "@types/react": "latest",

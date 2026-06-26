@@ -1,287 +1,2204 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
-  SafeAreaView,
+  ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
-import { WebView, type WebView as WebViewType } from "react-native-webview";
+import {
+  SafeAreaProvider,
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 
-type TabKey = "calendar" | "events" | "joined" | "my";
-type FabAction = {
+type TabKey = "events" | "calendar" | "joined" | "my";
+type RouteKey = TabKey | "create" | "access";
+type QuickAction = {
   label: string;
-  path: string;
+  route: RouteKey;
+  tone: string;
+};
+type ScheduleItem = {
+  date: string;
+  group: string;
+  startAt?: string;
+  status: string;
+  time: string;
+  title: string;
+};
+type HostEventView = {
+  approved: number;
+  code: string;
+  pending: number;
+  range?: string;
+  title: string;
+};
+type JoinedReservationView = {
+  event: string;
+  status: string;
+  time: string;
+};
+type ApiResult<T> =
+  | {
+      data: T;
+      ok: true;
+    }
+  | {
+      error: string;
+      ok: false;
+    };
+type MobileSession = {
+  accessToken: string;
+  expiresAt: number | null;
+  refreshToken: string;
+  user: MobileUser;
+};
+type MobileUser = {
+  email: string | null;
+  id: string;
+};
+type MobileDashboardSlot = {
+  confirmed_end_at: string | null;
+  confirmed_start_at: string | null;
+  end_at: string;
+  id: string;
+  is_confirmed: boolean;
+  priority_order: number;
+  reservation_id: string;
+  start_at: string;
+};
+type MobileDashboardParticipant = {
+  created_at?: string;
+  guest_name: string;
+  id: string;
+  is_creator: boolean;
+  reservation_id: string;
+  user_id: string | null;
+};
+type MobileHostedEvent = {
+  approvedCount: number;
+  confirmedSlots: MobileDashboardSlot[];
+  date_end: string;
+  date_start: string;
+  event_code: string;
+  id: string;
+  participants: MobileDashboardParticipant[];
+  pendingCount: number;
+  pendingSlots: MobileDashboardSlot[];
+  title: string;
+};
+type MobileGuestReservation = {
+  created_at: string;
+  event: {
+    date_end: string;
+    date_start: string;
+    event_code: string;
+    id: string;
+    title: string;
+  } | null;
+  event_id: string;
+  headcount: number;
+  id: string;
+  participants: MobileDashboardParticipant[];
+  reservation_access_code: string;
+  slots: MobileDashboardSlot[];
+  status: "APPROVED" | "CANCELLED" | "PENDING" | "REJECTED";
+};
+type MobileDashboardData = {
+  hostedEvents: MobileHostedEvent[];
+  reservations: MobileGuestReservation[];
+  user: MobileUser;
+};
+type AccessPreview =
+  | {
+      code: string;
+      kind: "event";
+      meta?: string;
+      title: string;
+      subtitle: string;
+    }
+  | {
+      code: string;
+      kind: "reservation";
+      meta?: string;
+      title: string;
+      subtitle: string;
+    };
+type RenderContext = {
+  accessPreview: AccessPreview | null;
+  apiError: string | null;
+  dashboard: MobileDashboardData | null;
+  isApiLoading: boolean;
+  onResolveCode: (code: string) => Promise<void>;
+  onSignIn: (email: string, password: string) => Promise<void>;
+  session: MobileSession | null;
+};
+
+declare const process: {
+  env?: {
+    EXPO_PUBLIC_API_BASE_URL?: string;
+  };
 };
 
 const PRIMARY = "#00264B";
+const PRIMARY_SOFT = "#EAF2FA";
+const INK = "#111827";
+const MUTED = "#6B7280";
+const SUBTLE = "#9CA3AF";
 const BORDER = "#E5E7EB";
 const BACKGROUND = "#FFFFFF";
-const MUTED = "#F5F6F8";
-const WEB_BASE_URL =
-  process.env.EXPO_PUBLIC_WEB_BASE_URL?.replace(/\/$/, "") ??
-  "http://localhost:3000";
+const SURFACE = "#F6F7F9";
+const APPROVED = "#1F7A4D";
+const PENDING = "#B7791F";
+const API_BASE_URL =
+  process.env?.EXPO_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
+  "https://grad-photo-time.vercel.app";
+const serifFont = Platform.select({
+  android: "serif",
+  ios: "Georgia",
+  default: undefined,
+});
 
-const TABS: Array<{ key: TabKey; label: string; title: string }> = [
-  { key: "events", label: "내 이벤트", title: "내 이벤트" },
-  { key: "calendar", label: "달력", title: "달력" },
-  { key: "joined", label: "참여한 이벤트", title: "참여한 이벤트" },
-  { key: "my", label: "My", title: "My" },
+const tabs: Array<{ key: TabKey; label: string; title: string; icon: string }> =
+  [
+    { key: "events", label: "내 이벤트", title: "내 이벤트", icon: "E" },
+    { key: "calendar", label: "달력", title: "달력", icon: "C" },
+    { key: "joined", label: "참여", title: "참여한 이벤트", icon: "J" },
+    { key: "my", label: "My", title: "My", icon: "M" },
+  ];
+
+const schedules: ScheduleItem[] = [
+  {
+    date: "6/26 (금)",
+    group: "민서 팀",
+    title: "중앙도서관 졸업사진",
+    time: "오후 02:00 - 오후 03:30",
+    status: "확정",
+  },
+  {
+    date: "6/28 (일)",
+    group: "건우 팀",
+    title: "본관 앞 촬영",
+    time: "오전 10:00 - 오전 11:00",
+    status: "대기",
+  },
+  {
+    date: "7/2 (목)",
+    group: "소연 팀",
+    title: "공대 잔디밭",
+    time: "오후 04:00 - 오후 05:00",
+    status: "확정",
+  },
 ];
 
+const hostEvents: HostEventView[] = [
+  {
+    code: "GRA26A",
+    pending: 4,
+    approved: 2,
+    title: "서연 졸업사진",
+  },
+  {
+    code: "PHOTO9",
+    pending: 2,
+    approved: 1,
+    title: "가족 촬영",
+  },
+];
+
+const joinedReservations: JoinedReservationView[] = [
+  {
+    event: "서연 졸업사진",
+    status: "확정",
+    time: "6/26 (금) 오후 02:00 - 오후 03:30",
+  },
+  {
+    event: "본관 앞 촬영",
+    status: "대기",
+    time: "6/28 (일) 오전 10:00 - 오전 11:00",
+  },
+];
+
+async function apiRequest<T>(
+  path: string,
+  options: RequestInit & { token?: string } = {},
+) {
+  const headers = new Headers(options.headers);
+
+  headers.set("Accept", "application/json");
+
+  if (options.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  if (options.token) {
+    headers.set("Authorization", `Bearer ${options.token}`);
+  }
+
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...options,
+    headers,
+  });
+  const result = (await response.json()) as ApiResult<T>;
+
+  if (!response.ok || !result.ok) {
+    throw new Error(
+      result.ok ? "요청에 실패했습니다." : result.error,
+    );
+  }
+
+  return result.data;
+}
+
+async function signIn(email: string, password: string) {
+  return apiRequest<MobileSession>("/api/mobile/auth/sign-in", {
+    body: JSON.stringify({ email, password }),
+    method: "POST",
+  });
+}
+
+async function loadDashboard(token: string) {
+  return apiRequest<MobileDashboardData>("/api/mobile/dashboard", { token });
+}
+
+async function resolveCode(code: string, token?: string) {
+  return apiRequest<{
+    code: string;
+    isHost?: boolean;
+    kind: "event" | "reservation";
+    targetId: string;
+  }>("/api/mobile/access/resolve", {
+    body: JSON.stringify({ code }),
+    method: "POST",
+    token,
+  });
+}
+
+async function loadEventPreview(eventCode: string) {
+  const data = await apiRequest<{
+    activeDates: string[];
+    event: {
+      date_end: string;
+      date_start: string;
+      description: string | null;
+      event_code: string;
+      id: string;
+      title: string;
+    };
+    reservationSlots: unknown[];
+    timeBlocks: unknown[];
+  }>(`/api/mobile/events/${encodeURIComponent(eventCode)}`);
+
+  return {
+    code: data.event.event_code,
+    kind: "event" as const,
+    subtitle: `${formatDate(data.event.date_start)} - ${formatDate(data.event.date_end)} · 가능 시간 ${data.timeBlocks.length}개`,
+    title: data.event.title,
+  };
+}
+
+async function loadReservationPreview(accessCode: string) {
+  const data = await apiRequest<{
+    event: {
+      title: string;
+    };
+    reservation: {
+      reservation_access_code: string;
+      slots: MobileDashboardSlot[];
+      status: MobileGuestReservation["status"];
+    };
+  }>(`/api/mobile/reservations/${encodeURIComponent(accessCode)}`);
+  const confirmed = data.reservation.slots.find((slot) => slot.is_confirmed);
+
+  return {
+    code: data.reservation.reservation_access_code,
+    kind: "reservation" as const,
+    subtitle: confirmed
+      ? `확정 · ${formatRange(confirmed.confirmed_start_at ?? confirmed.start_at, confirmed.confirmed_end_at ?? confirmed.end_at)}`
+      : `${statusLabel(data.reservation.status)} · 후보 ${data.reservation.slots.length}개`,
+    title: data.event.title,
+  };
+}
+
 export default function App() {
-  const webViewRef = useRef<WebViewType>(null);
+  return (
+    <SafeAreaProvider>
+      <NativeShell />
+    </SafeAreaProvider>
+  );
+}
+
+function NativeShell() {
+  const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState<TabKey>("calendar");
-  const [isFabOpen, setIsFabOpen] = useState(false);
-  const [uri, setUri] = useState(() => getTabUrl("calendar"));
-  const fabActions = useMemo(() => getFabActions(activeTab), [activeTab]);
+  const [accessPreview, setAccessPreview] = useState<AccessPreview | null>(
+    null,
+  );
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [dashboard, setDashboard] = useState<MobileDashboardData | null>(null);
+  const [isApiLoading, setIsApiLoading] = useState(false);
+  const [route, setRoute] = useState<RouteKey>("calendar");
+  const [session, setSession] = useState<MobileSession | null>(null);
+  const [isQuickOpen, setIsQuickOpen] = useState(false);
+  const quickActions = useMemo(() => getQuickActions(activeTab), [activeTab]);
+
+  const title = getTitle(route, activeTab);
 
   function openTab(tab: TabKey) {
     setActiveTab(tab);
-    setIsFabOpen(false);
-    setUri(getTabUrl(tab));
+    setRoute(tab);
+    setIsQuickOpen(false);
   }
 
-  function openPath(path: string) {
-    setIsFabOpen(false);
-    setUri(buildUrl(path));
+  function openRoute(nextRoute: RouteKey) {
+    setRoute(nextRoute);
+    setIsQuickOpen(false);
   }
 
-  function handleFabPress() {
-    if (fabActions.length === 1) {
-      openPath(fabActions[0].path);
+  function handleQuickPress() {
+    if (quickActions.length === 1) {
+      openRoute(quickActions[0].route);
       return;
     }
 
-    setIsFabOpen((current) => !current);
+    setIsQuickOpen((current) => !current);
   }
 
-  return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.app}>
-        <View style={styles.webViewShell}>
-          <WebView
-            ref={webViewRef}
-            source={{ uri }}
-            startInLoadingState
-            sharedCookiesEnabled
-            thirdPartyCookiesEnabled
-            renderLoading={() => (
-              <View style={styles.loading}>
-                <ActivityIndicator color={PRIMARY} />
-              </View>
-            )}
-          />
-        </View>
+  async function handleSignIn(email: string, password: string) {
+    setApiError(null);
+    setIsApiLoading(true);
 
-        <View style={styles.fabLayer} pointerEvents="box-none">
-          {isFabOpen ? (
-            <View style={styles.fabMenu}>
-              {fabActions.map((action) => (
+    try {
+      const nextSession = await signIn(email, password);
+      const nextDashboard = await loadDashboard(nextSession.accessToken);
+
+      setSession(nextSession);
+      setDashboard(nextDashboard);
+      setActiveTab("calendar");
+      setRoute("calendar");
+    } catch (error) {
+      setApiError(
+        error instanceof Error ? error.message : "로그인에 실패했습니다.",
+      );
+    } finally {
+      setIsApiLoading(false);
+    }
+  }
+
+  async function handleResolveCode(code: string) {
+    const trimmedCode = code.trim();
+
+    if (!trimmedCode) {
+      setApiError("코드를 입력해 주세요.");
+      return;
+    }
+
+    setAccessPreview(null);
+    setApiError(null);
+    setIsApiLoading(true);
+
+    try {
+      const resolved = await resolveCode(trimmedCode, session?.accessToken);
+      const preview =
+        resolved.kind === "event"
+          ? await loadEventPreview(resolved.code)
+          : await loadReservationPreview(resolved.code);
+
+      setAccessPreview({
+        ...preview,
+        meta:
+          resolved.kind === "event" && resolved.isHost
+            ? "내가 만든 이벤트"
+            : undefined,
+      });
+    } catch (error) {
+      setApiError(
+        error instanceof Error
+          ? error.message
+          : "코드를 확인하지 못했습니다.",
+      );
+    } finally {
+      setIsApiLoading(false);
+    }
+  }
+
+  const renderContext: RenderContext = {
+    accessPreview,
+    apiError,
+    dashboard,
+    isApiLoading,
+    onResolveCode: handleResolveCode,
+    onSignIn: handleSignIn,
+    session,
+  };
+
+  return (
+    <SafeAreaView edges={["top"]} style={styles.safeArea}>
+      <StatusBar backgroundColor={BACKGROUND} barStyle="dark-content" />
+      <View style={styles.app}>
+        <Header route={route} title={title} onBack={() => openTab(activeTab)} />
+        <View style={styles.body}>{renderRoute(route, renderContext)}</View>
+
+        {isQuickOpen ? (
+          <Pressable
+            accessibilityLabel="빠른 작업 닫기"
+            onPress={() => setIsQuickOpen(false)}
+            style={styles.scrim}
+          />
+        ) : null}
+
+        <View
+          pointerEvents="box-none"
+          style={[styles.quickLayer, { bottom: insets.bottom + 88 }]}
+        >
+          {isQuickOpen ? (
+            <View style={styles.quickMenu}>
+              {quickActions.map((action) => (
                 <Pressable
                   accessibilityRole="button"
                   key={action.label}
-                  onPress={() => openPath(action.path)}
-                  style={({ pressed }: { pressed: boolean }) => [
-                    styles.fabAction,
+                  onPress={() => openRoute(action.route)}
+                  style={({ pressed }) => [
+                    styles.quickAction,
                     pressed && styles.pressed,
                   ]}
                 >
-                  <Text style={styles.fabActionText}>{action.label}</Text>
+                  <View
+                    style={[
+                      styles.quickIcon,
+                      { backgroundColor: action.tone },
+                    ]}
+                  >
+                    <Text style={styles.quickIconText}>+</Text>
+                  </View>
+                  <Text style={styles.quickActionText}>{action.label}</Text>
                 </Pressable>
               ))}
             </View>
           ) : null}
+
           <Pressable
             accessibilityLabel="빠른 작업"
             accessibilityRole="button"
-            onPress={handleFabPress}
-            style={({ pressed }: { pressed: boolean }) => [
-              styles.fab,
-              pressed && styles.fabPressed,
+            onPress={handleQuickPress}
+            style={({ pressed }) => [
+              styles.quickButton,
+              isQuickOpen && styles.quickButtonOpen,
+              pressed && styles.quickButtonPressed,
             ]}
           >
-            <Text style={styles.fabText}>{isFabOpen ? "x" : "+"}</Text>
+            <Text style={styles.quickButtonText}>
+              {isQuickOpen ? "x" : "+"}
+            </Text>
           </Pressable>
         </View>
 
-        <View style={styles.tabBar}>
-          {TABS.map((tab) => {
-            const isActive = tab.key === activeTab;
+        <View
+          style={[
+            styles.tabBarOuter,
+            { paddingBottom: Math.max(insets.bottom, 8) },
+          ]}
+        >
+          <View style={styles.tabBar}>
+            {tabs.map((tab) => {
+              const isActive = tab.key === activeTab && route === tab.key;
 
-            return (
-              <Pressable
-                accessibilityRole="tab"
-                accessibilityState={{ selected: isActive }}
-                key={tab.key}
-                onPress={() => openTab(tab.key)}
-                style={({ pressed }: { pressed: boolean }) => [
-                  styles.tab,
-                  isActive && styles.activeTab,
-                  pressed && styles.pressed,
-                ]}
-              >
-                <Text
-                  numberOfLines={1}
-                  style={[styles.tabLabel, isActive && styles.activeTabLabel]}
+              return (
+                <Pressable
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: isActive }}
+                  key={tab.key}
+                  onPress={() => openTab(tab.key)}
+                  style={({ pressed }) => [
+                    styles.tab,
+                    isActive && styles.activeTab,
+                    pressed && styles.pressed,
+                  ]}
                 >
-                  {tab.label}
-                </Text>
-              </Pressable>
-            );
-          })}
+                  <View
+                    style={[
+                      styles.tabIcon,
+                      isActive && styles.activeTabIcon,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.tabIconText,
+                        isActive && styles.activeTabIconText,
+                      ]}
+                    >
+                      {tab.icon}
+                    </Text>
+                  </View>
+                  <Text
+                    numberOfLines={1}
+                    style={[
+                      styles.tabLabel,
+                      isActive && styles.activeTabLabel,
+                    ]}
+                  >
+                    {tab.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
         </View>
       </View>
     </SafeAreaView>
   );
 }
 
-function getTabUrl(tab: TabKey) {
-  if (tab === "events") {
-    return buildUrl("/", { mobileView: "host" });
-  }
+function Header({
+  route,
+  title,
+  onBack,
+}: {
+  route: RouteKey;
+  title: string;
+  onBack: () => void;
+}) {
+  const isModalRoute = route === "create" || route === "access";
 
-  if (tab === "joined") {
-    return buildUrl("/", { mobileView: "guest" });
-  }
-
-  if (tab === "my") {
-    return buildUrl("/auth");
-  }
-
-  return buildUrl("/", { mobileView: "calendar" });
+  return (
+    <View style={styles.header}>
+      <View style={styles.headerSide}>
+        {isModalRoute ? (
+          <Pressable
+            accessibilityRole="button"
+            onPress={onBack}
+            style={({ pressed }) => [
+              styles.headerBack,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Text style={styles.headerBackText}>‹</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      <Text numberOfLines={1} style={styles.headerTitle}>
+        {title}
+      </Text>
+      <View style={styles.headerSide} />
+    </View>
+  );
 }
 
-function getFabActions(tab: TabKey): FabAction[] {
+function renderRoute(route: RouteKey, context: RenderContext) {
+  if (route === "events") {
+    return (
+      <HostEventsScreen
+        dashboard={context.dashboard}
+        isLoading={context.isApiLoading}
+        session={context.session}
+      />
+    );
+  }
+
+  if (route === "joined") {
+    return (
+      <JoinedScreen
+        dashboard={context.dashboard}
+        isLoading={context.isApiLoading}
+        session={context.session}
+      />
+    );
+  }
+
+  if (route === "my") {
+    return (
+      <MyScreen
+        apiError={context.apiError}
+        dashboard={context.dashboard}
+        isLoading={context.isApiLoading}
+        onSignIn={context.onSignIn}
+        session={context.session}
+      />
+    );
+  }
+
+  if (route === "create") {
+    return <CreateEventScreen />;
+  }
+
+  if (route === "access") {
+    return (
+      <AccessScreen
+        accessPreview={context.accessPreview}
+        apiError={context.apiError}
+        isLoading={context.isApiLoading}
+        onResolveCode={context.onResolveCode}
+      />
+    );
+  }
+
+  return (
+    <CalendarScreen
+      dashboard={context.dashboard}
+      isLoading={context.isApiLoading}
+      session={context.session}
+    />
+  );
+}
+
+function CalendarScreen({
+  dashboard,
+  isLoading,
+  session,
+}: {
+  dashboard: MobileDashboardData | null;
+  isLoading: boolean;
+  session: MobileSession | null;
+}) {
+  const items = useMemo(() => buildSchedulesFromDashboard(dashboard), [dashboard]);
+
+  return (
+    <ScrollView
+      contentContainerStyle={styles.screenContent}
+      showsVerticalScrollIndicator={false}
+    >
+      <MonthCard dashboard={dashboard} />
+      <SectionHeader title="다가오는 일정" />
+      {isLoading ? <LoadingCard label="일정을 불러오는 중" /> : null}
+      {!session ? (
+        <EmptyCard
+          detail="My 탭에서 이메일로 로그인하면 내 확정 일정과 대기 후보가 여기에 표시됩니다."
+          title="로그인이 필요해요"
+        />
+      ) : null}
+      {session && items.length === 0 && !isLoading ? (
+        <EmptyCard
+          detail="호스트 확정 일정, 참여한 예약, 대기 후보가 생기면 달력에 바로 표시됩니다."
+          title="아직 표시할 일정이 없어요"
+        />
+      ) : null}
+      {(session ? items : schedules).map((item) => (
+        <ScheduleCard key={`${item.date}-${item.title}`} item={item} />
+      ))}
+    </ScrollView>
+  );
+}
+
+function MonthCard({
+  dashboard,
+}: {
+  dashboard: MobileDashboardData | null;
+}) {
+  const today = useMemo(() => new Date(), []);
+  const days = useMemo(() => buildMonthDays(today), [today]);
+  const markers = useMemo(
+    () => buildMonthMarkers(dashboard, today),
+    [dashboard, today],
+  );
+  const monthTitle = `${today.getFullYear()}년 ${today.getMonth() + 1}월`;
+
+  return (
+    <View style={styles.monthCard}>
+      <View style={styles.monthHeader}>
+        <Text style={styles.monthTitle}>{monthTitle}</Text>
+        <Text style={styles.monthToday}>오늘</Text>
+      </View>
+      <View style={styles.weekRow}>
+        {["일", "월", "화", "수", "목", "금", "토"].map((day, index) => (
+          <Text
+            key={day}
+            style={[
+              styles.weekLabel,
+              index === 0 && styles.sundayText,
+              index === 6 && styles.saturdayText,
+            ]}
+          >
+            {day}
+          </Text>
+        ))}
+      </View>
+      <View style={styles.monthGrid}>
+        {days.map((day, index) => {
+          const isToday =
+            day === today.getDate() &&
+            today.getMonth() === new Date().getMonth() &&
+            today.getFullYear() === new Date().getFullYear();
+          const dayKey =
+            day === null
+              ? ""
+              : buildDateKey(
+                  new Date(today.getFullYear(), today.getMonth(), day),
+                );
+          const hasApproved = dashboard
+            ? markers.approved.has(dayKey)
+            : [8, 18, 26].includes(day ?? -1);
+          const hasPending = dashboard
+            ? markers.pending.has(dayKey)
+            : [13, 28].includes(day ?? -1);
+
+          return (
+            <View
+              key={`${day ?? "blank"}-${index}`}
+              style={[styles.dayCell, isToday && styles.todayCell]}
+            >
+              {day ? (
+                <>
+                  <Text
+                    style={[
+                      styles.dayText,
+                      index % 7 === 0 && styles.sundayText,
+                      index % 7 === 6 && styles.saturdayText,
+                      isToday && styles.todayText,
+                    ]}
+                  >
+                    {day}
+                  </Text>
+                  <View style={styles.dayDots}>
+                    {hasApproved ? <View style={styles.approvedDot} /> : null}
+                    {hasPending ? <View style={styles.pendingDot} /> : null}
+                  </View>
+                </>
+              ) : null}
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+function ScheduleCard({
+  item,
+}: {
+  item: ScheduleItem;
+}) {
+  const approved = item.status === "확정";
+
+  return (
+    <View style={styles.scheduleCard}>
+      <View style={styles.scheduleTop}>
+        <View>
+          <Text style={styles.scheduleDate}>{item.date}</Text>
+          <Text style={styles.scheduleTitle}>{item.title}</Text>
+        </View>
+        <StatusPill approved={approved} label={item.status} />
+      </View>
+      <Text style={styles.scheduleTime}>{item.time}</Text>
+      <Text style={styles.scheduleGroup}>{item.group}</Text>
+    </View>
+  );
+}
+
+function HostEventsScreen({
+  dashboard,
+  isLoading,
+  session,
+}: {
+  dashboard: MobileDashboardData | null;
+  isLoading: boolean;
+  session: MobileSession | null;
+}) {
+  const events = useMemo(() => buildHostedEventViews(dashboard), [dashboard]);
+
+  return (
+    <ScrollView
+      contentContainerStyle={styles.screenContent}
+      showsVerticalScrollIndicator={false}
+    >
+      <SectionHeader title="관리 중" />
+      {isLoading ? <LoadingCard label="내 이벤트를 불러오는 중" /> : null}
+      {!session ? (
+        <EmptyCard
+          detail="My 탭에서 로그인하면 내가 만든 이벤트가 여기에 표시됩니다."
+          title="로그인이 필요해요"
+        />
+      ) : null}
+      {session && events.length === 0 && !isLoading ? (
+        <EmptyCard
+          detail="오른쪽 아래 + 버튼으로 새 이벤트를 만들 수 있어요."
+          title="아직 만든 이벤트가 없어요"
+        />
+      ) : null}
+      {(session ? events : hostEvents).map((event) => (
+        <View key={event.code} style={styles.eventCard}>
+          <View style={styles.eventTop}>
+            <View>
+              <Text style={styles.eventTitle}>{event.title}</Text>
+              <Text style={styles.eventCode}>{event.code}</Text>
+              {event.range ? (
+                <Text style={styles.eventRange}>{event.range}</Text>
+              ) : null}
+            </View>
+            <Text style={styles.chevron}>›</Text>
+          </View>
+          <View style={styles.statRow}>
+            <Stat label="확정" value={event.approved} tone={APPROVED} />
+            <Stat label="대기" value={event.pending} tone={PENDING} />
+          </View>
+        </View>
+      ))}
+    </ScrollView>
+  );
+}
+
+function JoinedScreen({
+  dashboard,
+  isLoading,
+  session,
+}: {
+  dashboard: MobileDashboardData | null;
+  isLoading: boolean;
+  session: MobileSession | null;
+}) {
+  const reservations = useMemo(
+    () => buildJoinedReservationViews(dashboard),
+    [dashboard],
+  );
+
+  return (
+    <ScrollView
+      contentContainerStyle={styles.screenContent}
+      showsVerticalScrollIndicator={false}
+    >
+      <SectionHeader title="내 예약" />
+      {isLoading ? <LoadingCard label="내 예약을 불러오는 중" /> : null}
+      {!session ? (
+        <EmptyCard
+          detail="My 탭에서 로그인하면 내가 만든 예약과 참여한 예약이 표시됩니다."
+          title="로그인이 필요해요"
+        />
+      ) : null}
+      {session && reservations.length === 0 && !isLoading ? (
+        <EmptyCard
+          detail="오른쪽 아래 + 버튼으로 이벤트 코드나 예약 관리 코드를 열 수 있어요."
+          title="아직 참여한 예약이 없어요"
+        />
+      ) : null}
+      {(session ? reservations : joinedReservations).map((reservation) => (
+        <View
+          key={`${reservation.event}-${reservation.time}`}
+          style={styles.reservationCard}
+        >
+          <View style={styles.scheduleTop}>
+            <Text style={styles.eventTitle}>{reservation.event}</Text>
+            <StatusPill
+              approved={reservation.status === "확정"}
+              label={reservation.status}
+            />
+          </View>
+          <Text style={styles.scheduleTime}>{reservation.time}</Text>
+        </View>
+      ))}
+    </ScrollView>
+  );
+}
+
+function MyScreen({
+  apiError,
+  dashboard,
+  isLoading,
+  onSignIn,
+  session,
+}: {
+  apiError: string | null;
+  dashboard: MobileDashboardData | null;
+  isLoading: boolean;
+  onSignIn: (email: string, password: string) => Promise<void>;
+  session: MobileSession | null;
+}) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [localError, setLocalError] = useState<string | null>(null);
+  const displayEmail = session?.user.email ?? "로그인 필요";
+  const initial = displayEmail.slice(0, 1).toUpperCase();
+
+  async function handleSubmit() {
+    if (!email.trim() || !password) {
+      setLocalError("이메일과 비밀번호를 입력해 주세요.");
+      return;
+    }
+
+    setLocalError(null);
+    await onSignIn(email.trim(), password);
+  }
+
+  return (
+    <ScrollView
+      contentContainerStyle={styles.screenContent}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+    >
+      <View style={styles.profileCard}>
+        <View style={styles.avatar}>
+          <Text style={styles.avatarText}>{session ? initial : "M"}</Text>
+        </View>
+        <Text style={styles.profileName}>
+          {session ? "로그인됨" : "이메일 로그인"}
+        </Text>
+        <Text style={styles.profileEmail}>
+          {session ? displayEmail : "가입한 이메일과 비밀번호를 입력하세요"}
+        </Text>
+      </View>
+
+      {!session ? (
+        <View style={styles.formCard}>
+          <Text style={styles.formLabel}>이메일</Text>
+          <TextInput
+            autoCapitalize="none"
+            keyboardType="email-address"
+            onChangeText={setEmail}
+            placeholder="name@example.com"
+            placeholderTextColor={SUBTLE}
+            style={styles.input}
+            value={email}
+          />
+          <Text style={styles.formLabel}>비밀번호</Text>
+          <TextInput
+            onChangeText={setPassword}
+            placeholder="8자 이상"
+            placeholderTextColor={SUBTLE}
+            secureTextEntry
+            style={styles.input}
+            value={password}
+          />
+          {localError || apiError ? (
+            <Text style={styles.errorText}>{localError ?? apiError}</Text>
+          ) : null}
+          <PrimaryAction
+            disabled={isLoading}
+            label="로그인"
+            loading={isLoading}
+            onPress={handleSubmit}
+          />
+        </View>
+      ) : (
+        <View style={styles.settingList}>
+          <View style={styles.settingRow}>
+            <Text style={styles.settingText}>내 이벤트</Text>
+            <Text style={styles.settingValue}>
+              {dashboard?.hostedEvents.length ?? 0}개
+            </Text>
+          </View>
+          <View style={styles.settingRow}>
+            <Text style={styles.settingText}>내 예약</Text>
+            <Text style={styles.settingValue}>
+              {dashboard?.reservations.length ?? 0}개
+            </Text>
+          </View>
+        </View>
+      )}
+    </ScrollView>
+  );
+}
+
+function CreateEventScreen() {
+  const [bufferBefore, setBufferBefore] = useState(true);
+  const [bufferAfter, setBufferAfter] = useState(true);
+
+  return (
+    <ScrollView
+      contentContainerStyle={styles.screenContent}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+    >
+      <View style={styles.formCard}>
+        <Text style={styles.formLabel}>이벤트명</Text>
+        <TextInput
+          placeholder="졸업사진 일정"
+          placeholderTextColor={SUBTLE}
+          style={styles.input}
+        />
+
+        <Text style={styles.formLabel}>설명</Text>
+        <TextInput
+          multiline
+          placeholder="촬영 장소나 준비물을 적어두세요"
+          placeholderTextColor={SUBTLE}
+          style={[styles.input, styles.textArea]}
+        />
+      </View>
+
+      <View style={styles.formCard}>
+        <View style={styles.formHeaderRow}>
+          <Text style={styles.formTitle}>가능 시간</Text>
+          <Text style={styles.formMeta}>30분 단위</Text>
+        </View>
+        <View style={styles.dateChipRow}>
+          {["6/26 (금)", "6/27 (토)", "6/28 (일)"].map((date, index) => (
+            <View
+              key={date}
+              style={[styles.dateChip, index === 0 && styles.activeDateChip]}
+            >
+              <Text
+                style={[
+                  styles.dateChipText,
+                  index === 0 && styles.activeDateChipText,
+                ]}
+              >
+                {date}
+              </Text>
+            </View>
+          ))}
+        </View>
+        <View style={styles.timePreview}>
+          <View style={styles.timeBlock} />
+          <Text style={styles.timePreviewText}>오전 10:00 - 오후 06:00</Text>
+        </View>
+      </View>
+
+      <View style={styles.formCard}>
+        <View style={styles.formHeaderRow}>
+          <Text style={styles.formTitle}>버퍼</Text>
+          <Text style={styles.formMeta}>30분</Text>
+        </View>
+        <ToggleRow
+          active={bufferBefore}
+          label="약속 전"
+          onPress={() => setBufferBefore((value) => !value)}
+        />
+        <ToggleRow
+          active={bufferAfter}
+          label="약속 후"
+          onPress={() => setBufferAfter((value) => !value)}
+        />
+      </View>
+
+      <Pressable style={styles.primaryButton}>
+        <Text style={styles.primaryButtonText}>이벤트 만들기</Text>
+      </Pressable>
+    </ScrollView>
+  );
+}
+
+function AccessScreen({
+  accessPreview,
+  apiError,
+  isLoading,
+  onResolveCode,
+}: {
+  accessPreview: AccessPreview | null;
+  apiError: string | null;
+  isLoading: boolean;
+  onResolveCode: (code: string) => Promise<void>;
+}) {
+  const [code, setCode] = useState("");
+
+  return (
+    <ScrollView
+      contentContainerStyle={styles.screenContent}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+    >
+      <View style={styles.accessCard}>
+        <Text style={styles.accessTitle}>코드 입력</Text>
+        <TextInput
+          autoCapitalize="characters"
+          onChangeText={setCode}
+          placeholder="이벤트 코드 또는 예약 코드"
+          placeholderTextColor={SUBTLE}
+          style={styles.codeInput}
+          value={code}
+        />
+        {apiError ? <Text style={styles.errorText}>{apiError}</Text> : null}
+        <PrimaryAction
+          disabled={isLoading}
+          label="열기"
+          loading={isLoading}
+          onPress={() => onResolveCode(code)}
+        />
+        {accessPreview ? (
+          <View style={styles.previewCard}>
+            <View style={styles.scheduleTop}>
+              <View style={styles.previewTextBlock}>
+                <Text style={styles.previewMeta}>
+                  {accessPreview.kind === "event" ? "이벤트" : "예약 관리"}
+                  {accessPreview.meta ? ` · ${accessPreview.meta}` : ""}
+                </Text>
+                <Text style={styles.previewTitle}>{accessPreview.title}</Text>
+              </View>
+              <Text style={styles.eventCode}>{accessPreview.code}</Text>
+            </View>
+            <Text style={styles.previewSubtitle}>{accessPreview.subtitle}</Text>
+          </View>
+        ) : null}
+      </View>
+    </ScrollView>
+  );
+}
+
+function SectionHeader({ title }: { title: string }) {
+  return <Text style={styles.sectionHeader}>{title}</Text>;
+}
+
+function StatusPill({
+  approved,
+  label,
+}: {
+  approved: boolean;
+  label: string;
+}) {
+  return (
+    <View style={[styles.statusPill, approved && styles.statusPillApproved]}>
+      <Text
+        style={[
+          styles.statusPillText,
+          approved && styles.statusPillApprovedText,
+        ]}
+      >
+        {label}
+      </Text>
+    </View>
+  );
+}
+
+function PrimaryAction({
+  disabled,
+  label,
+  loading,
+  onPress,
+}: {
+  disabled?: boolean;
+  label: string;
+  loading?: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.primaryButton,
+        disabled && styles.primaryButtonDisabled,
+        pressed && !disabled && styles.pressed,
+      ]}
+    >
+      {loading ? (
+        <ActivityIndicator color={BACKGROUND} />
+      ) : (
+        <Text style={styles.primaryButtonText}>{label}</Text>
+      )}
+    </Pressable>
+  );
+}
+
+function LoadingCard({ label }: { label: string }) {
+  return (
+    <View style={styles.loadingCard}>
+      <ActivityIndicator color={PRIMARY} />
+      <Text style={styles.loadingText}>{label}</Text>
+    </View>
+  );
+}
+
+function EmptyCard({
+  detail,
+  title,
+}: {
+  detail: string;
+  title: string;
+}) {
+  return (
+    <View style={styles.emptyCard}>
+      <Text style={styles.emptyTitle}>{title}</Text>
+      <Text style={styles.emptyDetail}>{detail}</Text>
+    </View>
+  );
+}
+
+function Stat({
+  label,
+  tone,
+  value,
+}: {
+  label: string;
+  tone: string;
+  value: number;
+}) {
+  return (
+    <View style={styles.statBox}>
+      <Text style={[styles.statValue, { color: tone }]}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function ToggleRow({
+  active,
+  label,
+  onPress,
+}: {
+  active: boolean;
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable onPress={onPress} style={styles.toggleRow}>
+      <Text style={styles.toggleLabel}>{label}</Text>
+      <View style={[styles.toggleTrack, active && styles.toggleTrackActive]}>
+        <View style={[styles.toggleThumb, active && styles.toggleThumbActive]} />
+      </View>
+    </Pressable>
+  );
+}
+
+function getQuickActions(tab: TabKey): QuickAction[] {
   if (tab === "events") {
-    return [{ label: "이벤트 만들기", path: "/host/events/new" }];
+    return [{ label: "이벤트 만들기", route: "create", tone: PRIMARY_SOFT }];
   }
 
   if (tab === "joined") {
-    return [{ label: "이벤트 참여하기", path: "/access" }];
+    return [{ label: "코드로 참여", route: "access", tone: "#EEF8F1" }];
   }
 
   return [
-    { label: "이벤트 만들기", path: "/host/events/new" },
-    { label: "이벤트 참여하기", path: "/access" },
+    { label: "이벤트 만들기", route: "create", tone: PRIMARY_SOFT },
+    { label: "코드로 참여", route: "access", tone: "#EEF8F1" },
   ];
 }
 
-function buildUrl(path: string, params: Record<string, string> = {}) {
-  const url = new URL(path, WEB_BASE_URL);
-
-  url.searchParams.set("shell", "mobile");
-
-  for (const [key, value] of Object.entries(params)) {
-    url.searchParams.set(key, value);
+function getTitle(route: RouteKey, activeTab: TabKey) {
+  if (route === "create") {
+    return "이벤트 만들기";
   }
 
-  return url.toString();
+  if (route === "access") {
+    return "코드 입력";
+  }
+
+  return tabs.find((tab) => tab.key === activeTab)?.title ?? "";
+}
+
+function buildMonthDays(date: Date) {
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells: Array<number | null> = [];
+
+  for (let index = 0; index < firstDay; index += 1) {
+    cells.push(null);
+  }
+
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    cells.push(day);
+  }
+
+  while (cells.length % 7 !== 0) {
+    cells.push(null);
+  }
+
+  return cells;
+}
+
+function buildSchedulesFromDashboard(
+  dashboard: MobileDashboardData | null,
+): ScheduleItem[] {
+  if (!dashboard) {
+    return [];
+  }
+
+  const hostItems = dashboard.hostedEvents.flatMap((event) => [
+    ...event.confirmedSlots.map((slot) =>
+      buildScheduleItem({
+        group: "호스트",
+        slot,
+        status: "확정",
+        title: event.title,
+      }),
+    ),
+    ...event.pendingSlots.map((slot) =>
+      buildScheduleItem({
+        group: "호스트",
+        slot,
+        status: "대기",
+        title: event.title,
+      }),
+    ),
+  ]);
+  const guestItems = dashboard.reservations.flatMap((reservation) =>
+    reservation.slots.map((slot) =>
+      buildScheduleItem({
+        group: "참여",
+        slot,
+        status: slot.is_confirmed ? "확정" : statusLabel(reservation.status),
+        title: reservation.event?.title ?? "예약",
+      }),
+    ),
+  );
+
+  return [...hostItems, ...guestItems].sort(
+    (left, right) =>
+      new Date(left.startAt ?? "").getTime() -
+      new Date(right.startAt ?? "").getTime(),
+  );
+}
+
+function buildScheduleItem({
+  group,
+  slot,
+  status,
+  title,
+}: {
+  group: string;
+  slot: MobileDashboardSlot;
+  status: string;
+  title: string;
+}): ScheduleItem {
+  const startAt = slot.is_confirmed
+    ? slot.confirmed_start_at ?? slot.start_at
+    : slot.start_at;
+  const endAt = slot.is_confirmed
+    ? slot.confirmed_end_at ?? slot.end_at
+    : slot.end_at;
+
+  return {
+    date: formatDate(startAt),
+    group,
+    startAt,
+    status,
+    time: formatTimeRange(startAt, endAt),
+    title,
+  };
+}
+
+function buildHostedEventViews(
+  dashboard: MobileDashboardData | null,
+): HostEventView[] {
+  if (!dashboard) {
+    return [];
+  }
+
+  return dashboard.hostedEvents.map((event) => ({
+    approved: event.approvedCount,
+    code: event.event_code,
+    pending: event.pendingCount,
+    range: `${formatDate(event.date_start)} - ${formatDate(event.date_end)}`,
+    title: event.title,
+  }));
+}
+
+function buildJoinedReservationViews(
+  dashboard: MobileDashboardData | null,
+): JoinedReservationView[] {
+  if (!dashboard) {
+    return [];
+  }
+
+  return dashboard.reservations.map((reservation) => {
+    const confirmedSlot = reservation.slots.find((slot) => slot.is_confirmed);
+    const firstSlot = reservation.slots[0];
+    const displaySlot = confirmedSlot ?? firstSlot;
+    const status = confirmedSlot ? "확정" : statusLabel(reservation.status);
+    const time = displaySlot
+      ? formatRange(
+          displaySlot.is_confirmed
+            ? displaySlot.confirmed_start_at ?? displaySlot.start_at
+            : displaySlot.start_at,
+          displaySlot.is_confirmed
+            ? displaySlot.confirmed_end_at ?? displaySlot.end_at
+            : displaySlot.end_at,
+        )
+      : "후보 시간 없음";
+
+    return {
+      event: reservation.event?.title ?? "예약",
+      status,
+      time:
+        reservation.slots.length > 1 && !confirmedSlot
+          ? `${time} · 후보 ${reservation.slots.length}개`
+          : time,
+    };
+  });
+}
+
+function buildMonthMarkers(
+  dashboard: MobileDashboardData | null,
+  monthDate: Date,
+) {
+  const approved = new Set<string>();
+  const pending = new Set<string>();
+
+  if (!dashboard) {
+    return { approved, pending };
+  }
+
+  for (const item of buildSchedulesFromDashboard(dashboard)) {
+    if (!item.startAt) {
+      continue;
+    }
+
+    const parsed = parseDateValue(item.startAt);
+
+    if (
+      parsed.getFullYear() !== monthDate.getFullYear() ||
+      parsed.getMonth() !== monthDate.getMonth()
+    ) {
+      continue;
+    }
+
+    if (item.status === "확정") {
+      approved.add(buildDateKey(parsed));
+    } else {
+      pending.add(buildDateKey(parsed));
+    }
+  }
+
+  return { approved, pending };
+}
+
+function formatDate(value: string) {
+  const date = parseDateValue(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  const weekdays = ["일", "월", "화", "수", "목", "금", "토"];
+
+  return `${date.getMonth() + 1}/${date.getDate()} (${weekdays[date.getDay()]})`;
+}
+
+function formatRange(startAt: string, endAt: string) {
+  return `${formatDate(startAt)} ${formatTimeRange(startAt, endAt)}`;
+}
+
+function formatTimeRange(startAt: string, endAt: string) {
+  return `${formatTime(startAt)} - ${formatTime(endAt)}`;
+}
+
+function formatTime(value: string) {
+  const date = parseDateValue(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  const hours = date.getHours();
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const period = hours < 12 ? "오전" : "오후";
+  const hour12 = hours % 12 || 12;
+
+  return `${period} ${String(hour12).padStart(2, "0")}:${minutes}`;
+}
+
+function statusLabel(status: MobileGuestReservation["status"]) {
+  if (status === "APPROVED") {
+    return "확정";
+  }
+
+  if (status === "PENDING") {
+    return "대기";
+  }
+
+  if (status === "CANCELLED") {
+    return "취소";
+  }
+
+  return "종료";
+}
+
+function parseDateValue(value: string) {
+  const dateOnlyMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+
+  if (dateOnlyMatch) {
+    return new Date(
+      Number(dateOnlyMatch[1]),
+      Number(dateOnlyMatch[2]) - 1,
+      Number(dateOnlyMatch[3]),
+    );
+  }
+
+  return new Date(value);
+}
+
+function buildDateKey(date: Date) {
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${date.getFullYear()}-${month}-${day}`;
 }
 
 const styles = StyleSheet.create({
+  accessCard: {
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 14,
+    padding: 18,
+  },
+  accessTitle: {
+    color: INK,
+    fontFamily: serifFont,
+    fontSize: 25,
+    fontWeight: "700",
+  },
+  activeDateChip: {
+    backgroundColor: PRIMARY,
+    borderColor: PRIMARY,
+  },
+  activeDateChipText: {
+    color: BACKGROUND,
+  },
   activeTab: {
-    borderTopColor: PRIMARY,
+    backgroundColor: BACKGROUND,
+  },
+  activeTabIcon: {
+    backgroundColor: PRIMARY_SOFT,
+  },
+  activeTabIconText: {
+    color: PRIMARY,
   },
   activeTabLabel: {
     color: PRIMARY,
-    fontWeight: "700",
+    fontWeight: "800",
   },
   app: {
-    backgroundColor: BACKGROUND,
+    backgroundColor: SURFACE,
     flex: 1,
   },
-  fab: {
+  approvedDot: {
+    backgroundColor: APPROVED,
+    borderRadius: 3,
+    height: 5,
+    width: 5,
+  },
+  avatar: {
     alignItems: "center",
     backgroundColor: PRIMARY,
-    borderRadius: 32,
+    borderRadius: 30,
+    height: 60,
+    justifyContent: "center",
+    width: 60,
+  },
+  avatarText: {
+    color: BACKGROUND,
+    fontFamily: serifFont,
+    fontSize: 28,
+    fontWeight: "700",
+  },
+  body: {
+    flex: 1,
+  },
+  chevron: {
+    color: SUBTLE,
+    fontSize: 28,
+    fontWeight: "300",
+  },
+  codeInput: {
+    backgroundColor: "#F9FAFB",
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    color: INK,
+    fontSize: 16,
+    fontWeight: "800",
+    height: 54,
+    paddingHorizontal: 14,
+  },
+  dateChip: {
+    borderColor: BORDER,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  dateChipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  dateChipText: {
+    color: MUTED,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  dayCell: {
+    alignItems: "center",
+    aspectRatio: 1,
+    borderRadius: 8,
+    justifyContent: "center",
+    width: "14.285%",
+  },
+  dayDots: {
+    flexDirection: "row",
+    gap: 3,
+    height: 7,
+    marginTop: 4,
+  },
+  dayText: {
+    color: INK,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  eventCard: {
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 14,
+    padding: 16,
+  },
+  eventCode: {
+    color: MUTED,
+    fontSize: 12,
+    fontWeight: "800",
+    marginTop: 3,
+  },
+  eventRange: {
+    color: SUBTLE,
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 5,
+  },
+  eventTitle: {
+    color: INK,
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  eventTop: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  formCard: {
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 12,
+    padding: 16,
+  },
+  formHeaderRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  formLabel: {
+    color: MUTED,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  formMeta: {
+    color: SUBTLE,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  formTitle: {
+    color: INK,
+    fontSize: 17,
+    fontWeight: "900",
+  },
+  header: {
+    alignItems: "center",
+    backgroundColor: BACKGROUND,
+    borderBottomColor: BORDER,
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    height: 54,
+    justifyContent: "center",
+    paddingHorizontal: 12,
+  },
+  headerBack: {
+    alignItems: "center",
+    borderRadius: 18,
+    height: 36,
+    justifyContent: "center",
+    width: 36,
+  },
+  headerBackText: {
+    color: PRIMARY,
+    fontSize: 32,
+    fontWeight: "300",
+    lineHeight: 34,
+  },
+  headerSide: {
+    alignItems: "flex-start",
+    position: "absolute",
+    left: 12,
+    width: 48,
+  },
+  headerTitle: {
+    color: INK,
+    fontFamily: serifFont,
+    fontSize: 20,
+    fontWeight: "700",
+  },
+  emptyCard: {
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 7,
+    padding: 16,
+  },
+  emptyDetail: {
+    color: MUTED,
+    fontSize: 13,
+    fontWeight: "600",
+    lineHeight: 19,
+  },
+  emptyTitle: {
+    color: INK,
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  errorText: {
+    color: "#B95050",
+    fontSize: 13,
+    fontWeight: "800",
+    lineHeight: 19,
+  },
+  input: {
+    backgroundColor: "#F9FAFB",
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    color: INK,
+    fontSize: 15,
+    minHeight: 50,
+    paddingHorizontal: 13,
+    paddingVertical: 12,
+  },
+  loadingCard: {
+    alignItems: "center",
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 10,
+    minHeight: 54,
+    paddingHorizontal: 16,
+  },
+  loadingText: {
+    color: MUTED,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  monthCard: {
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    padding: 14,
+  },
+  monthGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+  },
+  monthHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  monthTitle: {
+    color: INK,
+    fontFamily: serifFont,
+    fontSize: 23,
+    fontWeight: "700",
+  },
+  monthToday: {
+    color: PRIMARY,
+    fontSize: 13,
+    fontWeight: "900",
+    textDecorationLine: "underline",
+  },
+  pendingDot: {
+    backgroundColor: PENDING,
+    borderRadius: 3,
+    height: 5,
+    width: 5,
+  },
+  pressed: {
+    opacity: 0.72,
+  },
+  primaryButton: {
+    alignItems: "center",
+    backgroundColor: PRIMARY,
+    borderRadius: 8,
+    minHeight: 54,
+    justifyContent: "center",
+  },
+  primaryButtonDisabled: {
+    opacity: 0.64,
+  },
+  primaryButtonText: {
+    color: BACKGROUND,
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  previewCard: {
+    backgroundColor: "#F9FAFB",
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 10,
+    padding: 14,
+  },
+  previewMeta: {
+    color: PRIMARY,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  previewSubtitle: {
+    color: MUTED,
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 19,
+  },
+  previewTextBlock: {
+    flex: 1,
+    gap: 3,
+  },
+  previewTitle: {
+    color: INK,
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  profileCard: {
+    alignItems: "center",
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    padding: 22,
+  },
+  profileEmail: {
+    color: MUTED,
+    fontSize: 13,
+    fontWeight: "600",
+    marginTop: 4,
+  },
+  profileName: {
+    color: INK,
+    fontSize: 20,
+    fontWeight: "900",
+    marginTop: 12,
+  },
+  quickAction: {
+    alignItems: "center",
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 999,
+    borderWidth: 1,
+    elevation: 4,
+    flexDirection: "row",
+    gap: 10,
+    minHeight: 48,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    shadowColor: "#000",
+    shadowOffset: { height: 6, width: 0 },
+    shadowOpacity: 0.12,
+    shadowRadius: 14,
+  },
+  quickActionText: {
+    color: INK,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  quickButton: {
+    alignItems: "center",
+    backgroundColor: PRIMARY,
+    borderRadius: 30,
+    elevation: 8,
     height: 58,
     justifyContent: "center",
     shadowColor: "#000",
     shadowOffset: { height: 8, width: 0 },
     shadowOpacity: 0.2,
-    shadowRadius: 14,
+    shadowRadius: 18,
     width: 58,
   },
-  fabAction: {
-    backgroundColor: BACKGROUND,
-    borderColor: BORDER,
-    borderRadius: 999,
-    borderWidth: 1,
-    paddingHorizontal: 16,
-    paddingVertical: 11,
-    shadowColor: "#000",
-    shadowOffset: { height: 5, width: 0 },
-    shadowOpacity: 0.12,
-    shadowRadius: 10,
+  quickButtonOpen: {
+    backgroundColor: "#0B335F",
   },
-  fabActionText: {
+  quickButtonPressed: {
+    transform: [{ scale: 0.97 }],
+  },
+  quickButtonText: {
+    color: BACKGROUND,
+    fontSize: 30,
+    fontWeight: "500",
+    lineHeight: 33,
+  },
+  quickIcon: {
+    alignItems: "center",
+    borderRadius: 16,
+    height: 30,
+    justifyContent: "center",
+    width: 30,
+  },
+  quickIconText: {
     color: PRIMARY,
-    fontSize: 14,
-    fontWeight: "700",
+    fontSize: 20,
+    fontWeight: "500",
+    lineHeight: 23,
   },
-  fabLayer: {
+  quickLayer: {
     alignItems: "flex-end",
-    bottom: 82,
     position: "absolute",
     right: 18,
     zIndex: 20,
   },
-  fabMenu: {
+  quickMenu: {
     alignItems: "flex-end",
     gap: 10,
     marginBottom: 12,
   },
-  fabPressed: {
-    backgroundColor: "#001A33",
-  },
-  fabText: {
-    color: BACKGROUND,
-    fontSize: 30,
-    fontWeight: "500",
-    lineHeight: 32,
-  },
-  loading: {
-    alignItems: "center",
+  reservationCard: {
     backgroundColor: BACKGROUND,
-    bottom: 0,
-    justifyContent: "center",
-    left: 0,
-    position: "absolute",
-    right: 0,
-    top: 0,
-  },
-  pressed: {
-    opacity: 0.72,
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 10,
+    padding: 16,
   },
   safeArea: {
     backgroundColor: BACKGROUND,
     flex: 1,
   },
+  scheduleCard: {
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 10,
+    padding: 16,
+  },
+  scheduleDate: {
+    color: MUTED,
+    fontSize: 12,
+    fontWeight: "800",
+    marginBottom: 3,
+  },
+  scheduleGroup: {
+    color: MUTED,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  scheduleTime: {
+    color: INK,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  scheduleTitle: {
+    color: INK,
+    fontSize: 17,
+    fontWeight: "900",
+  },
+  scheduleTop: {
+    alignItems: "flex-start",
+    flexDirection: "row",
+    gap: 12,
+    justifyContent: "space-between",
+  },
+  screenContent: {
+    gap: 12,
+    padding: 16,
+    paddingBottom: 110,
+  },
+  scrim: {
+    backgroundColor: "rgba(17, 24, 39, 0.08)",
+    bottom: 0,
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
+    zIndex: 10,
+  },
+  sectionHeader: {
+    color: INK,
+    fontFamily: serifFont,
+    fontSize: 22,
+    fontWeight: "700",
+    marginTop: 6,
+  },
+  settingList: {
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
+  settingRow: {
+    alignItems: "center",
+    borderBottomColor: BORDER,
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    minHeight: 54,
+    paddingHorizontal: 16,
+  },
+  settingText: {
+    color: INK,
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  settingValue: {
+    color: PRIMARY,
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  statBox: {
+    backgroundColor: "#F9FAFB",
+    borderRadius: 8,
+    flex: 1,
+    padding: 12,
+  },
+  statLabel: {
+    color: MUTED,
+    fontSize: 12,
+    fontWeight: "800",
+    marginTop: 2,
+  },
+  statRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  statValue: {
+    fontSize: 22,
+    fontWeight: "900",
+  },
+  statusPill: {
+    backgroundColor: "#FFF8E8",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  statusPillApproved: {
+    backgroundColor: "#EAF7EF",
+  },
+  statusPillApprovedText: {
+    color: APPROVED,
+  },
+  statusPillText: {
+    color: PENDING,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  subtleText: {
+    color: SUBTLE,
+  },
+  sundayText: {
+    color: "#B95050",
+  },
+  saturdayText: {
+    color: "#4F78A8",
+  },
   tab: {
     alignItems: "center",
-    borderTopColor: "transparent",
-    borderTopWidth: 2,
+    borderRadius: 22,
     flex: 1,
+    gap: 2,
     justifyContent: "center",
     minWidth: 0,
+    paddingTop: 4,
   },
   tabBar: {
-    backgroundColor: BACKGROUND,
-    borderTopColor: BORDER,
-    borderTopWidth: 1,
+    backgroundColor: "#F9FAFB",
+    borderColor: BORDER,
+    borderRadius: 26,
+    borderWidth: 1,
     flexDirection: "row",
-    height: 68,
-    paddingBottom: 8,
+    gap: 4,
+    height: 64,
+    padding: 5,
+  },
+  tabBarOuter: {
+    backgroundColor: BACKGROUND,
+    borderTopColor: "rgba(229, 231, 235, 0.75)",
+    borderTopWidth: 1,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+  },
+  tabIcon: {
+    alignItems: "center",
+    borderRadius: 16,
+    height: 30,
+    justifyContent: "center",
+    width: 42,
+  },
+  tabIconText: {
+    color: MUTED,
+    fontSize: 13,
+    fontWeight: "900",
   },
   tabLabel: {
-    color: "#6B7280",
+    color: MUTED,
     fontSize: 11,
-    fontWeight: "600",
+    fontWeight: "700",
   },
-  webViewShell: {
-    backgroundColor: MUTED,
+  textArea: {
+    minHeight: 88,
+    textAlignVertical: "top",
+  },
+  timeBlock: {
+    backgroundColor: PRIMARY,
+    borderRadius: 6,
+    height: 34,
+    width: "72%",
+  },
+  timePreview: {
+    backgroundColor: "#F9FAFB",
+    borderRadius: 8,
+    gap: 9,
+    padding: 12,
+  },
+  timePreviewText: {
+    color: MUTED,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  todayCell: {
+    backgroundColor: PRIMARY,
+  },
+  todayText: {
+    color: BACKGROUND,
+  },
+  toggleLabel: {
+    color: INK,
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  toggleRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    minHeight: 44,
+  },
+  toggleThumb: {
+    backgroundColor: BACKGROUND,
+    borderRadius: 10,
+    height: 20,
+    transform: [{ translateX: 2 }],
+    width: 20,
+  },
+  toggleThumbActive: {
+    transform: [{ translateX: 22 }],
+  },
+  toggleTrack: {
+    backgroundColor: "#D1D5DB",
+    borderRadius: 12,
+    height: 24,
+    justifyContent: "center",
+    width: 44,
+  },
+  toggleTrackActive: {
+    backgroundColor: PRIMARY,
+  },
+  weekLabel: {
+    color: MUTED,
     flex: 1,
+    fontSize: 12,
+    fontWeight: "900",
+    textAlign: "center",
+  },
+  weekRow: {
+    flexDirection: "row",
+    marginBottom: 8,
   },
 });

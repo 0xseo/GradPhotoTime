@@ -18,15 +18,15 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 ## Mobile App
 
-The Expo mobile shell lives in `mobile/`. It keeps native bottom tabs and a floating `+` button while reusing the Next.js screens through WebView.
+The Expo mobile client lives in `mobile/`. It uses native React Native screens with bottom tabs and a floating `+` action button.
 
 ```bash
 cd mobile
 npm install
-EXPO_PUBLIC_WEB_BASE_URL=http://localhost:3000 npm run ios
+npm run android:local
 ```
 
-Use your Mac's LAN IP instead of `localhost` when testing on a physical phone.
+The current mobile client is native UI first. Data is still demo-backed until the mobile API layer is connected.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
