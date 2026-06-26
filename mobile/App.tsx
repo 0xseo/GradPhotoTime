@@ -19,7 +19,7 @@ import {
 } from "react-native-safe-area-context";
 
 type TabKey = "events" | "calendar" | "joined" | "my";
-type RouteKey = TabKey | "create" | "access";
+type RouteKey = TabKey | "create" | "access" | "eventManage";
 type QuickAction = {
   label: string;
   route: RouteKey;
@@ -36,6 +36,7 @@ type ScheduleItem = {
 type HostEventView = {
   approved: number;
   code: string;
+  id: string;
   pending: number;
   range?: string;
   title: string;
@@ -96,11 +97,17 @@ type MobileDashboardParticipant = {
 };
 type MobileHostedEvent = {
   approvedCount: number;
+  buffer_time_minutes: number;
   confirmedSlots: MobileDashboardSlot[];
+  daily_end_time: string;
+  daily_start_time: string;
   date_end: string;
   date_start: string;
   event_code: string;
   id: string;
+  is_buffer_active: boolean;
+  is_buffer_after_active: boolean;
+  is_buffer_before_active: boolean;
   participants: MobileDashboardParticipant[];
   pendingCount: number;
   pendingSlots: MobileDashboardSlot[];
@@ -149,10 +156,12 @@ type RenderContext = {
   dashboard: MobileDashboardData | null;
   isApiLoading: boolean;
   onCreateEvent: (payload: CreateEventPayload) => Promise<void>;
+  onOpenHostEvent: (eventId: string) => void;
   onRefreshDashboard: () => Promise<void>;
   onResolveCode: (code: string) => Promise<void>;
   onSignOut: () => Promise<void>;
   onSignIn: (email: string, password: string) => Promise<void>;
+  selectedHostEventId: string | null;
   session: MobileSession | null;
 };
 
@@ -216,12 +225,14 @@ const schedules: ScheduleItem[] = [
 
 const hostEvents: HostEventView[] = [
   {
+    id: "demo-host-event-1",
     code: "GRA26A",
     pending: 4,
     approved: 2,
     title: "서연 졸업사진",
   },
   {
+    id: "demo-host-event-2",
     code: "PHOTO9",
     pending: 2,
     approved: 1,
@@ -427,6 +438,9 @@ function NativeShell() {
   const [isApiLoading, setIsApiLoading] = useState(false);
   const [isRestoringSession, setIsRestoringSession] = useState(true);
   const [route, setRoute] = useState<RouteKey>("calendar");
+  const [selectedHostEventId, setSelectedHostEventId] = useState<string | null>(
+    null,
+  );
   const [session, setSession] = useState<MobileSession | null>(null);
   const [isQuickOpen, setIsQuickOpen] = useState(false);
   const quickActions = useMemo(() => getQuickActions(activeTab), [activeTab]);
@@ -479,11 +493,19 @@ function NativeShell() {
   function openTab(tab: TabKey) {
     setActiveTab(tab);
     setRoute(tab);
+    setSelectedHostEventId(null);
     setIsQuickOpen(false);
   }
 
   function openRoute(nextRoute: RouteKey) {
     setRoute(nextRoute);
+    setIsQuickOpen(false);
+  }
+
+  function openHostEvent(eventId: string) {
+    setActiveTab("events");
+    setSelectedHostEventId(eventId);
+    setRoute("eventManage");
     setIsQuickOpen(false);
   }
 
@@ -640,10 +662,12 @@ function NativeShell() {
     dashboard,
     isApiLoading: isBusy,
     onCreateEvent: handleCreateEvent,
+    onOpenHostEvent: openHostEvent,
     onRefreshDashboard: handleRefreshDashboard,
     onResolveCode: handleResolveCode,
     onSignOut: handleSignOut,
     onSignIn: handleSignIn,
+    selectedHostEventId,
     session,
   };
 
@@ -777,7 +801,8 @@ function Header({
   title: string;
   onBack: () => void;
 }) {
-  const isModalRoute = route === "create" || route === "access";
+  const isModalRoute =
+    route === "create" || route === "access" || route === "eventManage";
 
   return (
     <View style={styles.header}>
@@ -808,6 +833,22 @@ function renderRoute(route: RouteKey, context: RenderContext) {
     return (
       <HostEventsScreen
         dashboard={context.dashboard}
+        isLoading={context.isApiLoading}
+        onOpenEvent={context.onOpenHostEvent}
+        onRefresh={context.onRefreshDashboard}
+        session={context.session}
+      />
+    );
+  }
+
+  if (route === "eventManage") {
+    return (
+      <HostEventManageScreen
+        event={
+          context.dashboard?.hostedEvents.find(
+            (event) => event.id === context.selectedHostEventId,
+          ) ?? null
+        }
         isLoading={context.isApiLoading}
         onRefresh={context.onRefreshDashboard}
         session={context.session}
@@ -1083,11 +1124,13 @@ function ScheduleCard({
 function HostEventsScreen({
   dashboard,
   isLoading,
+  onOpenEvent,
   onRefresh,
   session,
 }: {
   dashboard: MobileDashboardData | null;
   isLoading: boolean;
+  onOpenEvent: (eventId: string) => void;
   onRefresh: () => Promise<void>;
   session: MobileSession | null;
 }) {
@@ -1118,7 +1161,17 @@ function HostEventsScreen({
         />
       ) : null}
       {(session ? events : hostEvents).map((event) => (
-        <View key={event.code} style={styles.eventCard}>
+        <Pressable
+          accessibilityLabel={`${event.title} 관리`}
+          accessibilityRole="button"
+          disabled={!session}
+          key={event.code}
+          onPress={() => onOpenEvent(event.id)}
+          style={({ pressed }) => [
+            styles.eventCard,
+            pressed && session && styles.pressed,
+          ]}
+        >
           <View style={styles.eventTop}>
             <View>
               <Text style={styles.eventTitle}>{event.title}</Text>
@@ -1133,9 +1186,155 @@ function HostEventsScreen({
             <Stat label="확정" value={event.approved} tone={APPROVED} />
             <Stat label="대기" value={event.pending} tone={PENDING} />
           </View>
-        </View>
+        </Pressable>
       ))}
     </ScrollView>
+  );
+}
+
+function HostEventManageScreen({
+  event,
+  isLoading,
+  onRefresh,
+  session,
+}: {
+  event: MobileHostedEvent | null;
+  isLoading: boolean;
+  onRefresh: () => Promise<void>;
+  session: MobileSession | null;
+}) {
+  const confirmedSlots = useMemo(
+    () => sortSlots(event?.confirmedSlots ?? []),
+    [event?.confirmedSlots],
+  );
+  const pendingSlots = useMemo(
+    () => sortSlots(event?.pendingSlots ?? []),
+    [event?.pendingSlots],
+  );
+
+  return (
+    <ScrollView
+      contentContainerStyle={styles.screenContent}
+      refreshControl={
+        session ? (
+          <RefreshControl refreshing={isLoading} onRefresh={onRefresh} />
+        ) : undefined
+      }
+      showsVerticalScrollIndicator={false}
+    >
+      {!session ? (
+        <EmptyCard
+          detail="My 탭에서 로그인한 뒤 이벤트를 관리할 수 있어요."
+          title="로그인이 필요해요"
+        />
+      ) : null}
+      {session && !event ? (
+        <EmptyCard
+          detail="아래로 당겨 새로고침하거나 내 이벤트 목록에서 다시 선택해 주세요."
+          title="이벤트를 찾지 못했어요"
+        />
+      ) : null}
+      {event ? (
+        <>
+          <View style={styles.manageHero}>
+            <View style={styles.manageTitleRow}>
+              <View style={styles.manageTitleBlock}>
+                <Text style={styles.manageEyebrow}>HOST EVENT</Text>
+                <Text style={styles.manageTitle}>{event.title}</Text>
+              </View>
+              <Text style={styles.manageCode}>{event.event_code}</Text>
+            </View>
+            <Text style={styles.manageMeta}>
+              {formatDate(event.date_start)} - {formatDate(event.date_end)}
+            </Text>
+            <Text style={styles.manageMeta}>
+              {formatTimeFromClock(event.daily_start_time)} -{" "}
+              {formatTimeFromClock(event.daily_end_time)}
+            </Text>
+            <View style={styles.statRow}>
+              <Stat
+                label="확정"
+                value={event.approvedCount}
+                tone={APPROVED}
+              />
+              <Stat label="대기" value={event.pendingCount} tone={PENDING} />
+            </View>
+            <View style={styles.bufferSummary}>
+              <Text style={styles.bufferSummaryLabel}>버퍼</Text>
+              <Text style={styles.bufferSummaryValue}>
+                {event.is_buffer_active
+                  ? `${event.buffer_time_minutes}분 · ${formatBufferDirections(event)}`
+                  : "사용 안함"}
+              </Text>
+            </View>
+          </View>
+
+          <SectionHeader title="확정 일정" />
+          {confirmedSlots.length > 0 ? (
+            confirmedSlots.map((slot) => (
+              <HostSlotCard event={event} key={slot.id} slot={slot} />
+            ))
+          ) : (
+            <EmptyCard
+              detail="승인한 일정이 생기면 여기에 표시됩니다."
+              title="확정 일정이 없어요"
+            />
+          )}
+
+          <SectionHeader title="대기 후보" />
+          {pendingSlots.length > 0 ? (
+            pendingSlots.map((slot) => (
+              <HostSlotCard event={event} key={slot.id} slot={slot} />
+            ))
+          ) : (
+            <EmptyCard
+              detail="예약자가 후보 시간을 신청하면 여기에 표시됩니다."
+              title="대기 후보가 없어요"
+            />
+          )}
+        </>
+      ) : null}
+    </ScrollView>
+  );
+}
+
+function HostSlotCard({
+  event,
+  slot,
+}: {
+  event: MobileHostedEvent;
+  slot: MobileDashboardSlot;
+}) {
+  const participants = getParticipantsForSlot(event, slot);
+  const participantLabel =
+    participants.length > 0 ? participants.join(", ") : "참여자 없음";
+  const displayStart = slot.is_confirmed
+    ? slot.confirmed_start_at ?? slot.start_at
+    : slot.start_at;
+  const displayEnd = slot.is_confirmed
+    ? slot.confirmed_end_at ?? slot.end_at
+    : slot.end_at;
+
+  return (
+    <View style={styles.hostSlotCard}>
+      <View style={styles.hostSlotTop}>
+        <View style={styles.hostSlotTitleBlock}>
+          <Text numberOfLines={1} style={styles.hostSlotTitle}>
+            {participantLabel}
+          </Text>
+          <Text style={styles.hostSlotMeta}>
+            {participants.length > 0 ? `${participants.length}명` : "인원 미정"}
+          </Text>
+        </View>
+        <StatusPill
+          approved={slot.is_confirmed}
+          label={slot.is_confirmed ? "확정" : `후보 ${slot.priority_order}`}
+        />
+      </View>
+      <Text style={styles.hostSlotTime}>
+        {formatRange(displayStart, displayEnd)}
+      </Text>
+    </View>
   );
 }
 
@@ -1709,6 +1908,10 @@ function getTitle(route: RouteKey, activeTab: TabKey) {
     return "코드 입력";
   }
 
+  if (route === "eventManage") {
+    return "이벤트 관리";
+  }
+
   return tabs.find((tab) => tab.key === activeTab)?.title ?? "";
 }
 
@@ -1815,6 +2018,7 @@ function buildHostedEventViews(
   return dashboard.hostedEvents.map((event) => ({
     approved: event.approvedCount,
     code: event.event_code,
+    id: event.id,
     pending: event.pendingCount,
     range: `${formatDate(event.date_start)} - ${formatDate(event.date_end)}`,
     title: event.title,
@@ -1853,6 +2057,47 @@ function buildJoinedReservationViews(
           : time,
     };
   });
+}
+
+function sortSlots(slots: MobileDashboardSlot[]) {
+  return [...slots].sort(
+    (left, right) =>
+      parseDateValue(getSlotDisplayStart(left)).getTime() -
+        parseDateValue(getSlotDisplayStart(right)).getTime() ||
+      left.priority_order - right.priority_order,
+  );
+}
+
+function getSlotDisplayStart(slot: MobileDashboardSlot) {
+  return slot.is_confirmed
+    ? slot.confirmed_start_at ?? slot.start_at
+    : slot.start_at;
+}
+
+function getParticipantsForSlot(
+  event: MobileHostedEvent,
+  slot: MobileDashboardSlot,
+) {
+  return event.participants
+    .filter((participant) => participant.reservation_id === slot.reservation_id)
+    .map((participant) => participant.guest_name)
+    .filter(Boolean);
+}
+
+function formatBufferDirections(event: MobileHostedEvent) {
+  if (event.is_buffer_before_active && event.is_buffer_after_active) {
+    return "전/후";
+  }
+
+  if (event.is_buffer_before_active) {
+    return "전";
+  }
+
+  if (event.is_buffer_after_active) {
+    return "후";
+  }
+
+  return "방향 없음";
 }
 
 function buildMonthMarkers(
@@ -1988,6 +2233,27 @@ function formatTime(value: string) {
   const hour12 = hours % 12 || 12;
 
   return `${period} ${String(hour12).padStart(2, "0")}:${minutes}`;
+}
+
+function formatTimeFromClock(value: string) {
+  const [hoursText, minutesText = "00"] = value.split(":");
+  const hours = Number(hoursText);
+  const minutes = Number(minutesText);
+
+  if (
+    Number.isNaN(hours) ||
+    Number.isNaN(minutes) ||
+    hours < 0 ||
+    hours > 24
+  ) {
+    return value;
+  }
+
+  const normalizedHours = hours === 24 ? 0 : hours;
+  const period = normalizedHours < 12 ? "오전" : "오후";
+  const hour12 = normalizedHours % 12 || 12;
+
+  return `${period} ${String(hour12).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
 function statusLabel(status: MobileGuestReservation["status"]) {
@@ -2357,6 +2623,60 @@ const styles = StyleSheet.create({
     paddingHorizontal: 13,
     paddingVertical: 12,
   },
+  bufferSummary: {
+    alignItems: "center",
+    backgroundColor: "#F9FAFB",
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+  },
+  bufferSummaryLabel: {
+    color: MUTED,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  bufferSummaryValue: {
+    color: INK,
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  hostSlotCard: {
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 9,
+    padding: 14,
+  },
+  hostSlotMeta: {
+    color: MUTED,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  hostSlotTime: {
+    color: INK,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  hostSlotTitle: {
+    color: INK,
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  hostSlotTitleBlock: {
+    flex: 1,
+    gap: 3,
+  },
+  hostSlotTop: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 10,
+    justifyContent: "space-between",
+  },
   loadingCard: {
     alignItems: "center",
     backgroundColor: BACKGROUND,
@@ -2395,6 +2715,49 @@ const styles = StyleSheet.create({
     fontFamily: serifFont,
     fontSize: 23,
     fontWeight: "700",
+  },
+  manageCode: {
+    backgroundColor: PRIMARY_SOFT,
+    borderRadius: 999,
+    color: PRIMARY,
+    fontSize: 12,
+    fontWeight: "900",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  manageEyebrow: {
+    color: PRIMARY,
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  manageHero: {
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 12,
+    padding: 16,
+  },
+  manageMeta: {
+    color: MUTED,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  manageTitle: {
+    color: INK,
+    fontFamily: serifFont,
+    fontSize: 24,
+    fontWeight: "700",
+  },
+  manageTitleBlock: {
+    flex: 1,
+    gap: 4,
+  },
+  manageTitleRow: {
+    alignItems: "flex-start",
+    flexDirection: "row",
+    gap: 12,
+    justifyContent: "space-between",
   },
   monthToday: {
     color: PRIMARY,

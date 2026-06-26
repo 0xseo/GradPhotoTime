@@ -6,7 +6,17 @@ type AdminClient = ReturnType<typeof createSupabaseAdminClient>;
 
 type MobileDashboardEvent = Pick<
   Tables<"events">,
-  "date_end" | "date_start" | "event_code" | "id" | "title"
+  | "buffer_time_minutes"
+  | "daily_end_time"
+  | "daily_start_time"
+  | "date_end"
+  | "date_start"
+  | "event_code"
+  | "id"
+  | "is_buffer_active"
+  | "is_buffer_after_active"
+  | "is_buffer_before_active"
+  | "title"
 >;
 
 type MobileDashboardReservation = Pick<
@@ -179,7 +189,9 @@ async function listParticipantsForReservationIds(
 async function listHostedEvents(admin: AdminClient, userId: string) {
   const { data, error } = await admin
     .from("events")
-    .select("id,event_code,title,date_start,date_end")
+    .select(
+      "id,event_code,title,date_start,date_end,daily_start_time,daily_end_time,buffer_time_minutes,is_buffer_active,is_buffer_before_active,is_buffer_after_active",
+    )
     .eq("host_id", userId)
     .order("created_at", { ascending: false });
 
@@ -293,7 +305,9 @@ async function listEventsByIds(admin: AdminClient, eventIds: string[]) {
 
   const { data, error } = await admin
     .from("events")
-    .select("id,event_code,title,date_start,date_end")
+    .select(
+      "id,event_code,title,date_start,date_end,daily_start_time,daily_end_time,buffer_time_minutes,is_buffer_active,is_buffer_before_active,is_buffer_after_active",
+    )
     .in("id", uniqueEventIds);
 
   if (error) {
