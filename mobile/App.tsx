@@ -202,6 +202,8 @@ const API_BASE_URL =
   process.env?.EXPO_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
   "https://grad-photo-time.vercel.app";
 const SESSION_STORAGE_KEY = "grad-photo-time.mobile-session";
+const MANAGE_TIMELINE_HOUR_HEIGHT = 58;
+const MANAGE_TIMELINE_BLOCK_MIN_HEIGHT = 34;
 const serifFont = Platform.select({
   android: "serif",
   ios: "Georgia",
@@ -1453,6 +1455,8 @@ function HostEventManageScreen({
             </View>
           </View>
 
+          <HostEventCalendar event={event} />
+
           <SectionHeader title="확정 일정" />
           {confirmedSlots.length > 0 ? (
             confirmedSlots.map((slot) => (
@@ -1491,6 +1495,203 @@ function HostEventManageScreen({
         </>
       ) : null}
     </ScrollView>
+  );
+}
+
+function HostEventCalendar({ event }: { event: MobileHostedEvent }) {
+  const eventDates = useMemo(
+    () => buildDateList(event.date_start, event.date_end),
+    [event.date_end, event.date_start],
+  );
+  const todayKey = buildDateKey(new Date());
+  const initialDate = eventDates.includes(todayKey)
+    ? todayKey
+    : eventDates[0] ?? event.date_start;
+  const [selectedDate, setSelectedDate] = useState(initialDate);
+  const currentDate = eventDates.includes(selectedDate)
+    ? selectedDate
+    : initialDate;
+  const allSlots = useMemo(
+    () => sortSlots([...event.confirmedSlots, ...event.pendingSlots]),
+    [event.confirmedSlots, event.pendingSlots],
+  );
+  const visibleSlots = useMemo(
+    () =>
+      allSlots
+        .map((slot) => ({
+          slot,
+          overlap: getSlotOverlapMinutes(slot, currentDate),
+        }))
+        .filter(
+          (
+            item,
+          ): item is {
+            overlap: { end: number; start: number };
+            slot: MobileDashboardSlot;
+          } => item.overlap !== null,
+        ),
+    [allSlots, currentDate],
+  );
+  const timelineBounds = useMemo(
+    () => buildManageTimelineBounds(event, currentDate, allSlots),
+    [allSlots, currentDate, event],
+  );
+  const timelineRows = useMemo(
+    () => buildTimelineRows(timelineBounds.start, timelineBounds.end),
+    [timelineBounds.end, timelineBounds.start],
+  );
+  const timelineHeight = Math.max(
+    ((timelineBounds.end - timelineBounds.start) / 60) *
+      MANAGE_TIMELINE_HOUR_HEIGHT,
+    MANAGE_TIMELINE_HOUR_HEIGHT,
+  );
+
+  return (
+    <View style={styles.manageCalendarCard}>
+      <View style={styles.manageCalendarHeader}>
+        <View>
+          <Text style={styles.manageCalendarEyebrow}>CALENDAR</Text>
+          <Text style={styles.manageCalendarTitle}>일정 달력</Text>
+        </View>
+        <Text style={styles.manageCalendarCount}>
+          {visibleSlots.length > 0 ? `${visibleSlots.length}개` : "비어 있음"}
+        </Text>
+      </View>
+
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.manageDateScroller}
+      >
+        <View style={styles.manageDateChipRow}>
+          {eventDates.map((dateKey) => {
+            const parsedDate = parseDateValue(dateKey);
+            const isSelected = dateKey === currentDate;
+            const isToday = dateKey === todayKey;
+            const weekday = parsedDate.getDay();
+
+            return (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ selected: isSelected }}
+                key={dateKey}
+                onPress={() => setSelectedDate(dateKey)}
+                style={({ pressed }) => [
+                  styles.manageDateChip,
+                  isSelected && styles.manageDateChipActive,
+                  isToday && !isSelected && styles.manageDateChipToday,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.manageDateChipDate,
+                    weekday === 0 && styles.sundayText,
+                    weekday === 6 && styles.saturdayText,
+                    isSelected && styles.manageDateChipDateActive,
+                  ]}
+                >
+                  {formatShortDate(dateKey)}
+                </Text>
+                <Text
+                  style={[
+                    styles.manageDateChipWeekday,
+                    weekday === 0 && styles.sundayText,
+                    weekday === 6 && styles.saturdayText,
+                    isSelected && styles.manageDateChipWeekdayActive,
+                  ]}
+                >
+                  {formatWeekday(dateKey)}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </ScrollView>
+
+      <View style={styles.manageTimeline}>
+        <View style={styles.manageTimelineTimeColumn}>
+          {timelineRows.map((minute) => (
+            <View
+              key={minute}
+              style={[
+                styles.manageTimelineTimeSlot,
+                { height: MANAGE_TIMELINE_HOUR_HEIGHT },
+              ]}
+            >
+              <Text style={styles.manageTimelineTimeText}>
+                {formatTimelineHour(minute)}
+              </Text>
+            </View>
+          ))}
+        </View>
+        <View style={[styles.manageTimelineLane, { height: timelineHeight }]}>
+          {timelineRows.map((minute) => (
+            <View
+              key={minute}
+              style={[
+                styles.manageTimelineHourLine,
+                { height: MANAGE_TIMELINE_HOUR_HEIGHT },
+              ]}
+            >
+              <View style={styles.manageTimelineHalfLine} />
+            </View>
+          ))}
+          {visibleSlots.map(({ overlap, slot }) => {
+            const participants = getParticipantsForSlot(event, slot);
+            const participantLabel =
+              participants.length > 0 ? participants.join(", ") : "참여자 없음";
+            const top =
+              ((overlap.start - timelineBounds.start) / 60) *
+                MANAGE_TIMELINE_HOUR_HEIGHT +
+              4;
+            const height = Math.max(
+              ((overlap.end - overlap.start) / 60) *
+                MANAGE_TIMELINE_HOUR_HEIGHT -
+                8,
+              MANAGE_TIMELINE_BLOCK_MIN_HEIGHT,
+            );
+
+            return (
+              <View
+                key={slot.id}
+                style={[
+                  styles.manageTimelineBlock,
+                  slot.is_confirmed
+                    ? styles.manageTimelineBlockApproved
+                    : styles.manageTimelineBlockPending,
+                  { height, top },
+                ]}
+              >
+                <Text
+                  numberOfLines={1}
+                  style={[
+                    styles.manageTimelineBlockTitle,
+                    slot.is_confirmed &&
+                      styles.manageTimelineBlockTitleApproved,
+                  ]}
+                >
+                  {participantLabel}
+                </Text>
+                <Text
+                  numberOfLines={1}
+                  style={[
+                    styles.manageTimelineBlockMeta,
+                    slot.is_confirmed &&
+                      styles.manageTimelineBlockMetaApproved,
+                  ]}
+                >
+                  {slot.is_confirmed
+                    ? "확정"
+                    : `후보 ${slot.priority_order}`}{" "}
+                  · {formatTimeRange(getSlotDisplayStart(slot), getSlotDisplayEnd(slot))}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+      </View>
+    </View>
   );
 }
 
@@ -2409,6 +2610,134 @@ function getSlotDisplayStart(slot: MobileDashboardSlot) {
     : slot.start_at;
 }
 
+function getSlotDisplayEnd(slot: MobileDashboardSlot) {
+  return slot.is_confirmed
+    ? slot.confirmed_end_at ?? slot.end_at
+    : slot.end_at;
+}
+
+function getSlotOverlapMinutes(slot: MobileDashboardSlot, dateKey: string) {
+  const dayStart = parseDateValue(dateKey);
+  const dayEnd = new Date(dayStart);
+  const slotStart = parseDateValue(getSlotDisplayStart(slot));
+  const slotEnd = parseDateValue(getSlotDisplayEnd(slot));
+
+  dayEnd.setDate(dayEnd.getDate() + 1);
+
+  if (
+    Number.isNaN(dayStart.getTime()) ||
+    Number.isNaN(slotStart.getTime()) ||
+    Number.isNaN(slotEnd.getTime())
+  ) {
+    return null;
+  }
+
+  const overlapStart = Math.max(slotStart.getTime(), dayStart.getTime());
+  const overlapEnd = Math.min(slotEnd.getTime(), dayEnd.getTime());
+
+  if (overlapEnd <= overlapStart) {
+    return null;
+  }
+
+  return {
+    end: Math.ceil((overlapEnd - dayStart.getTime()) / 60000),
+    start: Math.floor((overlapStart - dayStart.getTime()) / 60000),
+  };
+}
+
+function buildManageTimelineBounds(
+  event: MobileHostedEvent,
+  selectedDate: string,
+  slots: MobileDashboardSlot[],
+) {
+  const startClock = parseClockMinutes(event.daily_start_time);
+  const endClock = parseClockMinutes(event.daily_end_time);
+  let start = Number.isNaN(startClock) ? 540 : startClock;
+  let end = Number.isNaN(endClock) ? 1080 : endClock;
+
+  if (end <= start) {
+    end = 1440;
+  }
+
+  for (const slot of slots) {
+    const overlap = getSlotOverlapMinutes(slot, selectedDate);
+
+    if (!overlap) {
+      continue;
+    }
+
+    start = Math.min(start, overlap.start);
+    end = Math.max(end, overlap.end);
+  }
+
+  start = Math.max(0, Math.floor(start / 60) * 60);
+  end = Math.min(1440, Math.ceil(end / 60) * 60);
+
+  if (end <= start) {
+    end = Math.min(1440, start + 60);
+  }
+
+  return { end, start };
+}
+
+function buildTimelineRows(start: number, end: number) {
+  const rows: number[] = [];
+
+  for (let minute = start; minute < end; minute += 60) {
+    rows.push(minute);
+  }
+
+  return rows.length > 0 ? rows : [start];
+}
+
+function parseClockMinutes(value: string) {
+  const [hoursText, minutesText = "00"] = value.split(":");
+  const hours = Number(hoursText);
+  const minutes = Number(minutesText);
+
+  if (
+    Number.isNaN(hours) ||
+    Number.isNaN(minutes) ||
+    hours < 0 ||
+    hours > 24 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return Number.NaN;
+  }
+
+  return Math.min(1440, hours * 60 + minutes);
+}
+
+function formatTimelineHour(minutes: number) {
+  const hours = Math.floor(minutes / 60) % 24;
+  const period = hours < 12 ? "AM" : "PM";
+  const hour12 = hours % 12 || 12;
+
+  return `${hour12}${period}`;
+}
+
+function formatShortDate(value: string) {
+  const date = parseDateValue(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+function formatWeekday(value: string) {
+  const date = parseDateValue(value);
+  const weekdays = ["일", "월", "화", "수", "목", "금", "토"];
+
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return weekdays[date.getDay()];
+}
+
 function getParticipantsForSlot(
   event: MobileHostedEvent,
   slot: MobileDashboardSlot,
@@ -3080,6 +3409,42 @@ const styles = StyleSheet.create({
     fontSize: 23,
     fontWeight: "700",
   },
+  manageCalendarCard: {
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 12,
+    padding: 14,
+  },
+  manageCalendarCount: {
+    backgroundColor: "#F9FAFB",
+    borderColor: BORDER,
+    borderRadius: 999,
+    borderWidth: 1,
+    color: MUTED,
+    fontSize: 12,
+    fontWeight: "900",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  manageCalendarEyebrow: {
+    color: PRIMARY,
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  manageCalendarHeader: {
+    alignItems: "flex-start",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  manageCalendarTitle: {
+    color: INK,
+    fontFamily: serifFont,
+    fontSize: 22,
+    fontWeight: "700",
+    marginTop: 2,
+  },
   manageCode: {
     backgroundColor: PRIMARY_SOFT,
     borderRadius: 999,
@@ -3122,6 +3487,121 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 12,
     justifyContent: "space-between",
+  },
+  manageDateChip: {
+    alignItems: "center",
+    backgroundColor: "#F9FAFB",
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 3,
+    minWidth: 58,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+  },
+  manageDateChipActive: {
+    backgroundColor: PRIMARY,
+    borderColor: PRIMARY,
+  },
+  manageDateChipDate: {
+    color: INK,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  manageDateChipDateActive: {
+    color: BACKGROUND,
+  },
+  manageDateChipRow: {
+    flexDirection: "row",
+    gap: 8,
+    paddingRight: 2,
+  },
+  manageDateChipToday: {
+    borderColor: PRIMARY,
+  },
+  manageDateChipWeekday: {
+    color: MUTED,
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  manageDateChipWeekdayActive: {
+    color: "rgba(255, 255, 255, 0.82)",
+  },
+  manageDateScroller: {
+    marginHorizontal: -2,
+    paddingHorizontal: 2,
+  },
+  manageTimeline: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  manageTimelineBlock: {
+    borderRadius: 8,
+    left: 8,
+    overflow: "hidden",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    position: "absolute",
+    right: 8,
+  },
+  manageTimelineBlockApproved: {
+    backgroundColor: PRIMARY,
+  },
+  manageTimelineBlockMeta: {
+    color: "#8A5F17",
+    fontSize: 11,
+    fontWeight: "800",
+    marginTop: 3,
+  },
+  manageTimelineBlockMetaApproved: {
+    color: "rgba(255, 255, 255, 0.78)",
+  },
+  manageTimelineBlockPending: {
+    backgroundColor: "#FFF4D7",
+    borderColor: "#F3D08A",
+    borderWidth: 1,
+  },
+  manageTimelineBlockTitle: {
+    color: INK,
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  manageTimelineBlockTitleApproved: {
+    color: BACKGROUND,
+  },
+  manageTimelineHalfLine: {
+    borderTopColor: "#EEF0F3",
+    borderTopWidth: 1,
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: "50%",
+  },
+  manageTimelineHourLine: {
+    borderTopColor: BORDER,
+    borderTopWidth: 1,
+  },
+  manageTimelineLane: {
+    backgroundColor: "#FBFCFD",
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    flex: 1,
+    overflow: "hidden",
+    position: "relative",
+  },
+  manageTimelineTimeColumn: {
+    width: 42,
+  },
+  manageTimelineTimeSlot: {
+    alignItems: "flex-end",
+    paddingRight: 2,
+    paddingTop: 2,
+  },
+  manageTimelineTimeText: {
+    color: MUTED,
+    fontSize: 11,
+    fontWeight: "900",
   },
   monthToday: {
     color: PRIMARY,
