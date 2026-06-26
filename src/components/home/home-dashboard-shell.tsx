@@ -27,6 +27,7 @@ import type {
 type HomeDashboardShellProps = {
   hostedEvents: DashboardHostedEvent[];
   isSignedIn: boolean;
+  mobileView?: "calendar" | "guest" | "host" | null;
   reservations: DashboardGuestReservation[];
 };
 
@@ -35,9 +36,35 @@ type HomeRole = "guest" | "host";
 export function HomeDashboardShell({
   hostedEvents,
   isSignedIn,
+  mobileView = null,
   reservations,
 }: HomeDashboardShellProps) {
   const [activeRole, setActiveRole] = useState<HomeRole>("host");
+
+  if (mobileView) {
+    return (
+      <div className="min-h-dvh py-2">
+        {mobileView === "calendar" ? (
+          <HomeCalendarPanel
+            hostedEvents={hostedEvents}
+            reservations={reservations}
+          />
+        ) : null}
+        {mobileView === "host" ? (
+          <div className="space-y-4">
+            <CreateEventCard isSignedIn={isSignedIn} />
+            <HostedEventsPanel hostedEvents={hostedEvents} />
+          </div>
+        ) : null}
+        {mobileView === "guest" ? (
+          <div className="space-y-4">
+            <AccessCodeEntry variant="compact" />
+            <GuestReservationsPanel reservations={reservations} />
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className="grid min-h-[calc(100dvh-7rem)] gap-5 py-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(22rem,0.65fr)]">

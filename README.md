@@ -16,6 +16,18 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+## Mobile App
+
+The Expo mobile shell lives in `mobile/`. It keeps native bottom tabs and a floating `+` button while reusing the Next.js screens through WebView.
+
+```bash
+cd mobile
+npm install
+EXPO_PUBLIC_WEB_BASE_URL=http://localhost:3000 npm run ios
+```
+
+Use your Mac's LAN IP instead of `localhost` when testing on a physical phone.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.

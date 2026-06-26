@@ -9,6 +9,9 @@
     "lint": "eslint",
     "test": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --loader ./tests/ts-alias-loader.mjs --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
+    "mobile:dev": "npm --prefix mobile run start",
+    "mobile:ios": "npm --prefix mobile run ios",
+    "mobile:android": "npm --prefix mobile run android",
     "db:types": "supabase gen types typescript --project-id \"$SUPABASE_PROJECT_REF\" --schema public > src/lib/supabase/database.types.ts",
     "db:types:local": "supabase gen types typescript --local --schema public > src/lib/supabase/database.types.ts"
   },

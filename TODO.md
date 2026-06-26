@@ -21,4 +21,5 @@
 
 - Add automated tests for buffer-time conflict checks and reservation code management. (Started with reservation rule unit tests.)
 - Add deployment configuration and Supabase production redirect URLs.
-- Package Expo WebView shell after web flow stabilizes.
+- Package Expo WebView shell after web flow stabilizes. (Scaffolded in `mobile/` with native bottom tabs, WebView routes, and floating action button.)
+- Mobile deep links: when production domain/app IDs are ready, configure iOS Universal Links and Android App Links so QR/event links open the app when installed and web otherwise.
