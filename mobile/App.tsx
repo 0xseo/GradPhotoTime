@@ -58,6 +58,12 @@ type CreateEventPayload = {
   isBufferBeforeActive: boolean;
   title: string;
 };
+type ReviewReservationPayload = {
+  eventId: string;
+  reservationId: string;
+  slotId: string;
+  status: "APPROVED" | "PENDING";
+};
 type ApiResult<T> =
   | {
       data: T;
@@ -72,6 +78,11 @@ type MobileSession = {
   expiresAt: number | null;
   refreshToken: string;
   user: MobileUser;
+};
+type MobileSignUpResult = {
+  emailConfirmationRequired: boolean;
+  message: string;
+  session: MobileSession | null;
 };
 type MobileUser = {
   email: string | null;
@@ -158,9 +169,15 @@ type RenderContext = {
   onCreateEvent: (payload: CreateEventPayload) => Promise<void>;
   onOpenHostEvent: (eventId: string) => void;
   onRefreshDashboard: () => Promise<void>;
+  onReviewReservation: (payload: ReviewReservationPayload) => Promise<void>;
   onResolveCode: (code: string) => Promise<void>;
   onSignOut: () => Promise<void>;
   onSignIn: (email: string, password: string) => Promise<void>;
+  onSignUp: (
+    email: string,
+    password: string,
+    passwordConfirm: string,
+  ) => Promise<string>;
   selectedHostEventId: string | null;
   session: MobileSession | null;
 };
@@ -253,6 +270,16 @@ const joinedReservations: JoinedReservationView[] = [
   },
 ];
 
+class MobileApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "MobileApiError";
+    this.status = status;
+  }
+}
+
 async function apiRequest<T>(
   path: string,
   options: RequestInit & { token?: string } = {},
@@ -276,8 +303,9 @@ async function apiRequest<T>(
   const result = (await response.json()) as ApiResult<T>;
 
   if (!response.ok || !result.ok) {
-    throw new Error(
+    throw new MobileApiError(
       result.ok ? "요청에 실패했습니다." : result.error,
+      response.status,
     );
   }
 
@@ -287,6 +315,17 @@ async function apiRequest<T>(
 async function signIn(email: string, password: string) {
   return apiRequest<MobileSession>("/api/mobile/auth/sign-in", {
     body: JSON.stringify({ email, password }),
+    method: "POST",
+  });
+}
+
+async function signUp(
+  email: string,
+  password: string,
+  passwordConfirm: string,
+) {
+  return apiRequest<MobileSignUpResult>("/api/mobile/auth/sign-up", {
+    body: JSON.stringify({ email, password, passwordConfirm }),
     method: "POST",
   });
 }
@@ -314,6 +353,25 @@ async function createMobileEvent(payload: CreateEventPayload, token: string) {
     method: "POST",
     token,
   });
+}
+
+async function reviewMobileReservation(
+  payload: ReviewReservationPayload,
+  token: string,
+) {
+  return apiRequest<{ eventCode: string; reservationId: string }>(
+    "/api/mobile/reservations/review",
+    {
+      body: JSON.stringify({
+        confirmedSlotId: payload.slotId,
+        eventId: payload.eventId,
+        reservationId: payload.reservationId,
+        status: payload.status,
+      }),
+      method: "POST",
+      token,
+    },
+  );
 }
 
 async function resolveCode(code: string, token?: string) {
@@ -411,6 +469,32 @@ async function getUsableSession(session: MobileSession) {
   return refreshSession(session.refreshToken);
 }
 
+async function loadDashboardWithSession(session: MobileSession) {
+  let nextSession = await getUsableSession(session);
+
+  try {
+    return {
+      dashboard: await loadDashboard(nextSession.accessToken),
+      session: nextSession,
+    };
+  } catch (error) {
+    if (!isUnauthorizedError(error)) {
+      throw error;
+    }
+
+    nextSession = await refreshSession(session.refreshToken);
+
+    return {
+      dashboard: await loadDashboard(nextSession.accessToken),
+      session: nextSession,
+    };
+  }
+}
+
+function isUnauthorizedError(error: unknown) {
+  return error instanceof MobileApiError && error.status === 401;
+}
+
 function shouldRefreshSession(session: MobileSession) {
   if (!session.expiresAt) {
     return false;
@@ -452,29 +536,37 @@ function NativeShell() {
     let isMounted = true;
 
     async function restoreSession() {
-      try {
-        const storedSession = await loadStoredSession();
+      const storedSession = await loadStoredSession();
 
+      try {
         if (!storedSession) {
           return;
         }
 
-        const nextSession = await getUsableSession(storedSession);
-        const nextDashboard = await loadDashboard(nextSession.accessToken);
+        const { dashboard: nextDashboard, session: nextSession } =
+          await loadDashboardWithSession(storedSession);
 
-        if (nextSession !== storedSession) {
-          await saveStoredSession(nextSession);
-        }
+        await saveStoredSession(nextSession);
 
         if (isMounted) {
           setSession(nextSession);
           setDashboard(nextDashboard);
         }
-      } catch {
-        await clearStoredSession();
+      } catch (error) {
+        if (isUnauthorizedError(error)) {
+          await clearStoredSession();
+        }
 
         if (isMounted) {
-          setApiError("저장된 로그인 정보가 만료됐습니다.");
+          if (storedSession && !isUnauthorizedError(error)) {
+            setSession(storedSession);
+          }
+
+          setApiError(
+            isUnauthorizedError(error)
+              ? "저장된 로그인 정보가 만료됐습니다."
+              : "저장된 로그인으로 시작했지만 데이터를 새로 불러오지 못했습니다.",
+          );
         }
       } finally {
         if (isMounted) {
@@ -528,24 +620,58 @@ function NativeShell() {
     setIsApiLoading(true);
 
     try {
-      const nextSession = await getUsableSession(session);
-      const nextDashboard = await loadDashboard(nextSession.accessToken);
+      const { dashboard: nextDashboard, session: nextSession } =
+        await loadDashboardWithSession(session);
 
-      if (nextSession !== session) {
-        setSession(nextSession);
-        await saveStoredSession(nextSession);
-      }
-
+      setSession(nextSession);
+      await saveStoredSession(nextSession);
       setDashboard(nextDashboard);
     } catch (error) {
-      await clearStoredSession();
-      setSession(null);
-      setDashboard(null);
+      if (isUnauthorizedError(error)) {
+        await clearStoredSession();
+        setSession(null);
+        setDashboard(null);
+      }
+
       setApiError(
         error instanceof Error
           ? error.message
           : "대시보드를 새로고침하지 못했습니다.",
       );
+    } finally {
+      setIsApiLoading(false);
+    }
+  }
+
+  async function handleSignUp(
+    email: string,
+    password: string,
+    passwordConfirm: string,
+  ) {
+    setApiError(null);
+    setIsApiLoading(true);
+
+    try {
+      const result = await signUp(email, password, passwordConfirm);
+
+      if (result.session) {
+        const { dashboard: nextDashboard, session: nextSession } =
+          await loadDashboardWithSession(result.session);
+
+        await saveStoredSession(nextSession);
+        setSession(nextSession);
+        setDashboard(nextDashboard);
+        setActiveTab("calendar");
+        setRoute("calendar");
+      }
+
+      return result.message;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "가입에 실패했습니다.";
+
+      setApiError(message);
+      return message;
     } finally {
       setIsApiLoading(false);
     }
@@ -557,10 +683,11 @@ function NativeShell() {
 
     try {
       const nextSession = await signIn(email, password);
-      const nextDashboard = await loadDashboard(nextSession.accessToken);
+      const { dashboard: nextDashboard, session: usableSession } =
+        await loadDashboardWithSession(nextSession);
 
-      await saveStoredSession(nextSession);
-      setSession(nextSession);
+      await saveStoredSession(usableSession);
+      setSession(usableSession);
       setDashboard(nextDashboard);
       setActiveTab("calendar");
       setRoute("calendar");
@@ -592,17 +719,68 @@ function NativeShell() {
     setIsApiLoading(true);
 
     try {
-      const nextSession = await getUsableSession(session);
+      let nextSession = await getUsableSession(session);
 
-      await createMobileEvent(payload, nextSession.accessToken);
-      setDashboard(await loadDashboard(nextSession.accessToken));
-      setSession(nextSession);
-      await saveStoredSession(nextSession);
+      try {
+        await createMobileEvent(payload, nextSession.accessToken);
+      } catch (error) {
+        if (!isUnauthorizedError(error)) {
+          throw error;
+        }
+
+        nextSession = await refreshSession(session.refreshToken);
+        await createMobileEvent(payload, nextSession.accessToken);
+      }
+
+      const { dashboard: nextDashboard, session: dashboardSession } =
+        await loadDashboardWithSession(nextSession);
+
+      setDashboard(nextDashboard);
+      setSession(dashboardSession);
+      await saveStoredSession(dashboardSession);
       setActiveTab("events");
       setRoute("events");
     } catch (error) {
       setApiError(
         error instanceof Error ? error.message : "이벤트 생성에 실패했습니다.",
+      );
+    } finally {
+      setIsApiLoading(false);
+    }
+  }
+
+  async function handleReviewReservation(payload: ReviewReservationPayload) {
+    if (!session?.accessToken) {
+      setApiError("로그인이 필요합니다.");
+      return;
+    }
+
+    setApiError(null);
+    setIsApiLoading(true);
+
+    try {
+      let nextSession = await getUsableSession(session);
+
+      try {
+        await reviewMobileReservation(payload, nextSession.accessToken);
+      } catch (error) {
+        if (!isUnauthorizedError(error)) {
+          throw error;
+        }
+
+        nextSession = await refreshSession(session.refreshToken);
+        await reviewMobileReservation(payload, nextSession.accessToken);
+      }
+
+      const { dashboard: nextDashboard, session: dashboardSession } =
+        await loadDashboardWithSession(nextSession);
+
+      setDashboard(nextDashboard);
+      setSession(dashboardSession);
+      await saveStoredSession(dashboardSession);
+    } catch (error) {
+      setApiError(
+        error instanceof Error ? error.message : "예약을 처리하지 못했습니다.",
       );
     } finally {
       setIsApiLoading(false);
@@ -664,9 +842,11 @@ function NativeShell() {
     onCreateEvent: handleCreateEvent,
     onOpenHostEvent: openHostEvent,
     onRefreshDashboard: handleRefreshDashboard,
+    onReviewReservation: handleReviewReservation,
     onResolveCode: handleResolveCode,
     onSignOut: handleSignOut,
     onSignIn: handleSignIn,
+    onSignUp: handleSignUp,
     selectedHostEventId,
     session,
   };
@@ -851,6 +1031,7 @@ function renderRoute(route: RouteKey, context: RenderContext) {
         }
         isLoading={context.isApiLoading}
         onRefresh={context.onRefreshDashboard}
+        onReviewReservation={context.onReviewReservation}
         session={context.session}
       />
     );
@@ -876,6 +1057,7 @@ function renderRoute(route: RouteKey, context: RenderContext) {
         onRefresh={context.onRefreshDashboard}
         onSignOut={context.onSignOut}
         onSignIn={context.onSignIn}
+        onSignUp={context.onSignUp}
         session={context.session}
       />
     );
@@ -1196,11 +1378,13 @@ function HostEventManageScreen({
   event,
   isLoading,
   onRefresh,
+  onReviewReservation,
   session,
 }: {
   event: MobileHostedEvent | null;
   isLoading: boolean;
   onRefresh: () => Promise<void>;
+  onReviewReservation: (payload: ReviewReservationPayload) => Promise<void>;
   session: MobileSession | null;
 }) {
   const confirmedSlots = useMemo(
@@ -1272,7 +1456,13 @@ function HostEventManageScreen({
           <SectionHeader title="확정 일정" />
           {confirmedSlots.length > 0 ? (
             confirmedSlots.map((slot) => (
-              <HostSlotCard event={event} key={slot.id} slot={slot} />
+              <HostSlotCard
+                event={event}
+                isLoading={isLoading}
+                key={slot.id}
+                onReviewReservation={onReviewReservation}
+                slot={slot}
+              />
             ))
           ) : (
             <EmptyCard
@@ -1284,7 +1474,13 @@ function HostEventManageScreen({
           <SectionHeader title="대기 후보" />
           {pendingSlots.length > 0 ? (
             pendingSlots.map((slot) => (
-              <HostSlotCard event={event} key={slot.id} slot={slot} />
+              <HostSlotCard
+                event={event}
+                isLoading={isLoading}
+                key={slot.id}
+                onReviewReservation={onReviewReservation}
+                slot={slot}
+              />
             ))
           ) : (
             <EmptyCard
@@ -1300,9 +1496,13 @@ function HostEventManageScreen({
 
 function HostSlotCard({
   event,
+  isLoading,
+  onReviewReservation,
   slot,
 }: {
   event: MobileHostedEvent;
+  isLoading: boolean;
+  onReviewReservation: (payload: ReviewReservationPayload) => Promise<void>;
   slot: MobileDashboardSlot;
 }) {
   const participants = getParticipantsForSlot(event, slot);
@@ -1314,6 +1514,7 @@ function HostSlotCard({
   const displayEnd = slot.is_confirmed
     ? slot.confirmed_end_at ?? slot.end_at
     : slot.end_at;
+  const nextStatus = slot.is_confirmed ? "PENDING" : "APPROVED";
 
   return (
     <View style={styles.hostSlotCard}>
@@ -1334,6 +1535,37 @@ function HostSlotCard({
       <Text style={styles.hostSlotTime}>
         {formatRange(displayStart, displayEnd)}
       </Text>
+      <Pressable
+        accessibilityRole="button"
+        disabled={isLoading}
+        onPress={() =>
+          onReviewReservation({
+            eventId: event.id,
+            reservationId: slot.reservation_id,
+            slotId: slot.id,
+            status: nextStatus,
+          })
+        }
+        style={({ pressed }) => [
+          styles.slotActionButton,
+          slot.is_confirmed && styles.slotActionButtonGhost,
+          isLoading && styles.primaryButtonDisabled,
+          pressed && !isLoading && styles.pressed,
+        ]}
+      >
+        {isLoading ? (
+          <ActivityIndicator color={slot.is_confirmed ? PRIMARY : BACKGROUND} />
+        ) : (
+          <Text
+            style={[
+              styles.slotActionText,
+              slot.is_confirmed && styles.slotActionTextGhost,
+            ]}
+          >
+            {slot.is_confirmed ? "확정 취소" : "승인"}
+          </Text>
+        )}
+      </Pressable>
     </View>
   );
 }
@@ -1404,6 +1636,7 @@ function MyScreen({
   onRefresh,
   onSignOut,
   onSignIn,
+  onSignUp,
   session,
 }: {
   apiError: string | null;
@@ -1412,21 +1645,42 @@ function MyScreen({
   onRefresh: () => Promise<void>;
   onSignOut: () => Promise<void>;
   onSignIn: (email: string, password: string) => Promise<void>;
+  onSignUp: (
+    email: string,
+    password: string,
+    passwordConfirm: string,
+  ) => Promise<string>;
   session: MobileSession | null;
 }) {
+  const [authMode, setAuthMode] = useState<"signIn" | "signUp">("signIn");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [passwordConfirm, setPasswordConfirm] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const displayEmail = session?.user.email ?? "로그인 필요";
   const initial = displayEmail.slice(0, 1).toUpperCase();
 
   async function handleSubmit() {
+    setNotice(null);
+
     if (!email.trim() || !password) {
       setLocalError("이메일과 비밀번호를 입력해 주세요.");
       return;
     }
 
+    if (authMode === "signUp" && password !== passwordConfirm) {
+      setLocalError("비밀번호 확인이 일치하지 않습니다.");
+      return;
+    }
+
     setLocalError(null);
+
+    if (authMode === "signUp") {
+      setNotice(await onSignUp(email.trim(), password, passwordConfirm));
+      return;
+    }
+
     await onSignIn(email.trim(), password);
   }
 
@@ -1446,7 +1700,11 @@ function MyScreen({
           <Text style={styles.avatarText}>{session ? initial : "M"}</Text>
         </View>
         <Text style={styles.profileName}>
-          {session ? "로그인됨" : "이메일 로그인"}
+          {session
+            ? "로그인됨"
+            : authMode === "signUp"
+              ? "이메일 회원가입"
+              : "이메일 로그인"}
         </Text>
         <Text style={styles.profileEmail}>
           {session ? displayEmail : "가입한 이메일과 비밀번호를 입력하세요"}
@@ -1455,6 +1713,48 @@ function MyScreen({
 
       {!session ? (
         <View style={styles.formCard}>
+          <View style={styles.authSwitch}>
+            <Pressable
+              onPress={() => {
+                setAuthMode("signIn");
+                setLocalError(null);
+                setNotice(null);
+              }}
+              style={[
+                styles.authSwitchButton,
+                authMode === "signIn" && styles.authSwitchButtonActive,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.authSwitchText,
+                  authMode === "signIn" && styles.authSwitchTextActive,
+                ]}
+              >
+                로그인
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                setAuthMode("signUp");
+                setLocalError(null);
+                setNotice(null);
+              }}
+              style={[
+                styles.authSwitchButton,
+                authMode === "signUp" && styles.authSwitchButtonActive,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.authSwitchText,
+                  authMode === "signUp" && styles.authSwitchTextActive,
+                ]}
+              >
+                가입
+              </Text>
+            </Pressable>
+          </View>
           <Text style={styles.formLabel}>이메일</Text>
           <TextInput
             autoCapitalize="none"
@@ -1474,12 +1774,47 @@ function MyScreen({
             style={styles.input}
             value={password}
           />
+          {authMode === "signUp" ? (
+            <>
+              <Text style={styles.formLabel}>비밀번호 확인</Text>
+              <TextInput
+                onChangeText={setPasswordConfirm}
+                placeholder="비밀번호를 한 번 더 입력"
+                placeholderTextColor={SUBTLE}
+                secureTextEntry
+                style={styles.input}
+                value={passwordConfirm}
+              />
+              <View style={styles.passwordHintBox}>
+                <Text
+                  style={[
+                    styles.passwordHintText,
+                    password.length >= 8 && styles.passwordHintTextPassed,
+                  ]}
+                >
+                  {password.length >= 8 ? "✓" : "•"} 비밀번호 8자 이상
+                </Text>
+                <Text
+                  style={[
+                    styles.passwordHintText,
+                    password !== "" &&
+                      password === passwordConfirm &&
+                      styles.passwordHintTextPassed,
+                  ]}
+                >
+                  {password !== "" && password === passwordConfirm ? "✓" : "•"}{" "}
+                  비밀번호 확인 일치
+                </Text>
+              </View>
+            </>
+          ) : null}
           {localError || apiError ? (
             <Text style={styles.errorText}>{localError ?? apiError}</Text>
           ) : null}
+          {notice ? <Text style={styles.noticeText}>{notice}</Text> : null}
           <PrimaryAction
             disabled={isLoading}
-            label="로그인"
+            label={authMode === "signUp" ? "가입하기" : "로그인"}
             loading={isLoading}
             onPress={handleSubmit}
           />
@@ -2363,6 +2698,35 @@ const styles = StyleSheet.create({
     height: 5,
     width: 5,
   },
+  authSwitch: {
+    backgroundColor: "#F9FAFB",
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 4,
+    padding: 4,
+  },
+  authSwitchButton: {
+    alignItems: "center",
+    borderRadius: 6,
+    flex: 1,
+    minHeight: 38,
+    justifyContent: "center",
+  },
+  authSwitchButtonActive: {
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderWidth: 1,
+  },
+  authSwitchText: {
+    color: MUTED,
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  authSwitchTextActive: {
+    color: PRIMARY,
+  },
   avatar: {
     alignItems: "center",
     backgroundColor: PRIMARY,
@@ -2771,6 +3135,28 @@ const styles = StyleSheet.create({
     height: 5,
     width: 5,
   },
+  noticeText: {
+    color: PRIMARY,
+    fontSize: 13,
+    fontWeight: "800",
+    lineHeight: 19,
+  },
+  passwordHintBox: {
+    backgroundColor: "#F9FAFB",
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 5,
+    padding: 11,
+  },
+  passwordHintText: {
+    color: MUTED,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  passwordHintTextPassed: {
+    color: APPROVED,
+  },
   pressed: {
     opacity: 0.72,
   },
@@ -3009,6 +3395,26 @@ const styles = StyleSheet.create({
     color: "#B95050",
     fontSize: 15,
     fontWeight: "900",
+  },
+  slotActionButton: {
+    alignItems: "center",
+    backgroundColor: PRIMARY,
+    borderRadius: 8,
+    minHeight: 44,
+    justifyContent: "center",
+  },
+  slotActionButtonGhost: {
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderWidth: 1,
+  },
+  slotActionText: {
+    color: BACKGROUND,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  slotActionTextGhost: {
+    color: PRIMARY,
   },
   statBox: {
     backgroundColor: "#F9FAFB",

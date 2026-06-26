@@ -12,6 +12,12 @@ type MobileAuthSession = {
   };
 };
 
+type MobileSignUpResult = {
+  emailConfirmationRequired: boolean;
+  message: string;
+  session: MobileAuthSession | null;
+};
+
 export function getBearerToken(request: Request) {
   const authorization = request.headers.get("authorization");
 
@@ -68,6 +74,63 @@ export async function signInMobileUser(
       email: data.user.email ?? null,
       id: data.user.id,
     },
+  };
+}
+
+export async function signUpMobileUser({
+  email,
+  emailRedirectTo,
+  password,
+}: {
+  email: string;
+  emailRedirectTo?: string;
+  password: string;
+}): Promise<MobileSignUpResult> {
+  const client = createMobileSupabaseClient();
+  const { data, error } = await client.auth.signUp({
+    email,
+    password,
+    options: emailRedirectTo
+      ? {
+          emailRedirectTo,
+        }
+      : undefined,
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  if (data.user?.identities?.length === 0) {
+    return {
+      emailConfirmationRequired: true,
+      message:
+        "이미 가입된 이메일일 수 있습니다. 로그인하거나 비밀번호 재설정을 이용해 주세요.",
+      session: null,
+    };
+  }
+
+  if (data.session && data.user) {
+    return {
+      emailConfirmationRequired: false,
+      message: "가입과 로그인이 완료되었습니다.",
+      session: {
+        accessToken: data.session.access_token,
+        expiresAt: data.session.expires_at ?? null,
+        refreshToken: data.session.refresh_token,
+        user: {
+          email: data.user.email ?? null,
+          id: data.user.id,
+        },
+      },
+    };
+  }
+
+  return {
+    emailConfirmationRequired: true,
+    message:
+      "가입 확인 메일을 보냈습니다. 메일 인증 후 이메일과 비밀번호로 로그인해 주세요.",
+    session: null,
   };
 }
 
