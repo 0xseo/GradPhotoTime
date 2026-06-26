@@ -71,6 +71,29 @@ export async function signInMobileUser(
   };
 }
 
+export async function refreshMobileSession(
+  refreshToken: string,
+): Promise<MobileAuthSession> {
+  const client = createMobileSupabaseClient();
+  const { data, error } = await client.auth.refreshSession({
+    refresh_token: refreshToken,
+  });
+
+  if (error || !data.session || !data.user) {
+    throw new Error(error?.message ?? "세션 갱신에 실패했습니다.");
+  }
+
+  return {
+    accessToken: data.session.access_token,
+    expiresAt: data.session.expires_at ?? null,
+    refreshToken: data.session.refresh_token,
+    user: {
+      email: data.user.email ?? null,
+      id: data.user.id,
+    },
+  };
+}
+
 function createMobileSupabaseClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;

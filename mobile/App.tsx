@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -10,6 +11,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import * as SecureStore from "expo-secure-store";
 import {
   SafeAreaProvider,
   SafeAreaView,
@@ -42,6 +44,18 @@ type JoinedReservationView = {
   event: string;
   status: string;
   time: string;
+};
+type CreateEventPayload = {
+  activeDates: string[];
+  bufferTimeMinutes: number;
+  dailyEndTime: string;
+  dailyStartTime: string;
+  dateEnd: string;
+  dateStart: string;
+  description: string;
+  isBufferAfterActive: boolean;
+  isBufferBeforeActive: boolean;
+  title: string;
 };
 type ApiResult<T> =
   | {
@@ -134,7 +148,10 @@ type RenderContext = {
   apiError: string | null;
   dashboard: MobileDashboardData | null;
   isApiLoading: boolean;
+  onCreateEvent: (payload: CreateEventPayload) => Promise<void>;
+  onRefreshDashboard: () => Promise<void>;
   onResolveCode: (code: string) => Promise<void>;
+  onSignOut: () => Promise<void>;
   onSignIn: (email: string, password: string) => Promise<void>;
   session: MobileSession | null;
 };
@@ -158,6 +175,7 @@ const PENDING = "#B7791F";
 const API_BASE_URL =
   process.env?.EXPO_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
   "https://grad-photo-time.vercel.app";
+const SESSION_STORAGE_KEY = "grad-photo-time.mobile-session";
 const serifFont = Platform.select({
   android: "serif",
   ios: "Georgia",
@@ -262,8 +280,29 @@ async function signIn(email: string, password: string) {
   });
 }
 
+async function refreshSession(refreshToken: string) {
+  return apiRequest<MobileSession>("/api/mobile/auth/refresh", {
+    body: JSON.stringify({ refreshToken }),
+    method: "POST",
+  });
+}
+
 async function loadDashboard(token: string) {
   return apiRequest<MobileDashboardData>("/api/mobile/dashboard", { token });
+}
+
+async function createMobileEvent(payload: CreateEventPayload, token: string) {
+  return apiRequest<{
+    event: {
+      event_code: string;
+      id: string;
+      title: string;
+    };
+  }>("/api/mobile/events", {
+    body: JSON.stringify(payload),
+    method: "POST",
+    token,
+  });
 }
 
 async function resolveCode(code: string, token?: string) {
@@ -325,6 +364,50 @@ async function loadReservationPreview(accessCode: string) {
   };
 }
 
+async function saveStoredSession(session: MobileSession) {
+  await SecureStore.setItemAsync(SESSION_STORAGE_KEY, JSON.stringify(session));
+}
+
+async function loadStoredSession() {
+  const rawSession = await SecureStore.getItemAsync(SESSION_STORAGE_KEY);
+
+  if (!rawSession) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(rawSession) as MobileSession;
+
+    if (!parsed.accessToken || !parsed.refreshToken || !parsed.user?.id) {
+      return null;
+    }
+
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function clearStoredSession() {
+  await SecureStore.deleteItemAsync(SESSION_STORAGE_KEY);
+}
+
+async function getUsableSession(session: MobileSession) {
+  if (!shouldRefreshSession(session)) {
+    return session;
+  }
+
+  return refreshSession(session.refreshToken);
+}
+
+function shouldRefreshSession(session: MobileSession) {
+  if (!session.expiresAt) {
+    return false;
+  }
+
+  return session.expiresAt * 1000 < Date.now() + 60_000;
+}
+
 export default function App() {
   return (
     <SafeAreaProvider>
@@ -342,12 +425,56 @@ function NativeShell() {
   const [apiError, setApiError] = useState<string | null>(null);
   const [dashboard, setDashboard] = useState<MobileDashboardData | null>(null);
   const [isApiLoading, setIsApiLoading] = useState(false);
+  const [isRestoringSession, setIsRestoringSession] = useState(true);
   const [route, setRoute] = useState<RouteKey>("calendar");
   const [session, setSession] = useState<MobileSession | null>(null);
   const [isQuickOpen, setIsQuickOpen] = useState(false);
   const quickActions = useMemo(() => getQuickActions(activeTab), [activeTab]);
 
   const title = getTitle(route, activeTab);
+  const isBusy = isApiLoading || isRestoringSession;
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function restoreSession() {
+      try {
+        const storedSession = await loadStoredSession();
+
+        if (!storedSession) {
+          return;
+        }
+
+        const nextSession = await getUsableSession(storedSession);
+        const nextDashboard = await loadDashboard(nextSession.accessToken);
+
+        if (nextSession !== storedSession) {
+          await saveStoredSession(nextSession);
+        }
+
+        if (isMounted) {
+          setSession(nextSession);
+          setDashboard(nextDashboard);
+        }
+      } catch {
+        await clearStoredSession();
+
+        if (isMounted) {
+          setApiError("저장된 로그인 정보가 만료됐습니다.");
+        }
+      } finally {
+        if (isMounted) {
+          setIsRestoringSession(false);
+        }
+      }
+    }
+
+    void restoreSession();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   function openTab(tab: TabKey) {
     setActiveTab(tab);
@@ -369,6 +496,39 @@ function NativeShell() {
     setIsQuickOpen((current) => !current);
   }
 
+  async function handleRefreshDashboard() {
+    if (!session?.accessToken) {
+      setApiError("로그인이 필요합니다.");
+      return;
+    }
+
+    setApiError(null);
+    setIsApiLoading(true);
+
+    try {
+      const nextSession = await getUsableSession(session);
+      const nextDashboard = await loadDashboard(nextSession.accessToken);
+
+      if (nextSession !== session) {
+        setSession(nextSession);
+        await saveStoredSession(nextSession);
+      }
+
+      setDashboard(nextDashboard);
+    } catch (error) {
+      await clearStoredSession();
+      setSession(null);
+      setDashboard(null);
+      setApiError(
+        error instanceof Error
+          ? error.message
+          : "대시보드를 새로고침하지 못했습니다.",
+      );
+    } finally {
+      setIsApiLoading(false);
+    }
+  }
+
   async function handleSignIn(email: string, password: string) {
     setApiError(null);
     setIsApiLoading(true);
@@ -377,6 +537,7 @@ function NativeShell() {
       const nextSession = await signIn(email, password);
       const nextDashboard = await loadDashboard(nextSession.accessToken);
 
+      await saveStoredSession(nextSession);
       setSession(nextSession);
       setDashboard(nextDashboard);
       setActiveTab("calendar");
@@ -384,6 +545,42 @@ function NativeShell() {
     } catch (error) {
       setApiError(
         error instanceof Error ? error.message : "로그인에 실패했습니다.",
+      );
+    } finally {
+      setIsApiLoading(false);
+    }
+  }
+
+  async function handleSignOut() {
+    await clearStoredSession();
+    setSession(null);
+    setDashboard(null);
+    setApiError(null);
+    setActiveTab("my");
+    setRoute("my");
+  }
+
+  async function handleCreateEvent(payload: CreateEventPayload) {
+    if (!session?.accessToken) {
+      setApiError("로그인이 필요합니다.");
+      return;
+    }
+
+    setApiError(null);
+    setIsApiLoading(true);
+
+    try {
+      const nextSession = await getUsableSession(session);
+
+      await createMobileEvent(payload, nextSession.accessToken);
+      setDashboard(await loadDashboard(nextSession.accessToken));
+      setSession(nextSession);
+      await saveStoredSession(nextSession);
+      setActiveTab("events");
+      setRoute("events");
+    } catch (error) {
+      setApiError(
+        error instanceof Error ? error.message : "이벤트 생성에 실패했습니다.",
       );
     } finally {
       setIsApiLoading(false);
@@ -403,7 +600,17 @@ function NativeShell() {
     setIsApiLoading(true);
 
     try {
-      const resolved = await resolveCode(trimmedCode, session?.accessToken);
+      const nextSession = session ? await getUsableSession(session) : null;
+
+      if (nextSession && nextSession !== session) {
+        setSession(nextSession);
+        await saveStoredSession(nextSession);
+      }
+
+      const resolved = await resolveCode(
+        trimmedCode,
+        nextSession?.accessToken,
+      );
       const preview =
         resolved.kind === "event"
           ? await loadEventPreview(resolved.code)
@@ -431,8 +638,11 @@ function NativeShell() {
     accessPreview,
     apiError,
     dashboard,
-    isApiLoading,
+    isApiLoading: isBusy,
+    onCreateEvent: handleCreateEvent,
+    onRefreshDashboard: handleRefreshDashboard,
     onResolveCode: handleResolveCode,
+    onSignOut: handleSignOut,
     onSignIn: handleSignIn,
     session,
   };
@@ -441,7 +651,11 @@ function NativeShell() {
     <SafeAreaView edges={["top"]} style={styles.safeArea}>
       <StatusBar backgroundColor={BACKGROUND} barStyle="dark-content" />
       <View style={styles.app}>
-        <Header route={route} title={title} onBack={() => openTab(activeTab)} />
+        <Header
+          onBack={() => openTab(activeTab)}
+          route={route}
+          title={title}
+        />
         <View style={styles.body}>{renderRoute(route, renderContext)}</View>
 
         {isQuickOpen ? (
@@ -595,6 +809,7 @@ function renderRoute(route: RouteKey, context: RenderContext) {
       <HostEventsScreen
         dashboard={context.dashboard}
         isLoading={context.isApiLoading}
+        onRefresh={context.onRefreshDashboard}
         session={context.session}
       />
     );
@@ -605,6 +820,7 @@ function renderRoute(route: RouteKey, context: RenderContext) {
       <JoinedScreen
         dashboard={context.dashboard}
         isLoading={context.isApiLoading}
+        onRefresh={context.onRefreshDashboard}
         session={context.session}
       />
     );
@@ -616,6 +832,8 @@ function renderRoute(route: RouteKey, context: RenderContext) {
         apiError={context.apiError}
         dashboard={context.dashboard}
         isLoading={context.isApiLoading}
+        onRefresh={context.onRefreshDashboard}
+        onSignOut={context.onSignOut}
         onSignIn={context.onSignIn}
         session={context.session}
       />
@@ -623,7 +841,14 @@ function renderRoute(route: RouteKey, context: RenderContext) {
   }
 
   if (route === "create") {
-    return <CreateEventScreen />;
+    return (
+      <CreateEventScreen
+        apiError={context.apiError}
+        isLoading={context.isApiLoading}
+        onCreateEvent={context.onCreateEvent}
+        session={context.session}
+      />
+    );
   }
 
   if (route === "access") {
@@ -641,6 +866,7 @@ function renderRoute(route: RouteKey, context: RenderContext) {
     <CalendarScreen
       dashboard={context.dashboard}
       isLoading={context.isApiLoading}
+      onRefresh={context.onRefreshDashboard}
       session={context.session}
     />
   );
@@ -649,10 +875,12 @@ function renderRoute(route: RouteKey, context: RenderContext) {
 function CalendarScreen({
   dashboard,
   isLoading,
+  onRefresh,
   session,
 }: {
   dashboard: MobileDashboardData | null;
   isLoading: boolean;
+  onRefresh: () => Promise<void>;
   session: MobileSession | null;
 }) {
   const items = useMemo(() => buildSchedulesFromDashboard(dashboard), [dashboard]);
@@ -660,6 +888,11 @@ function CalendarScreen({
   return (
     <ScrollView
       contentContainerStyle={styles.screenContent}
+      refreshControl={
+        session ? (
+          <RefreshControl refreshing={isLoading} onRefresh={onRefresh} />
+        ) : undefined
+      }
       showsVerticalScrollIndicator={false}
     >
       <MonthCard dashboard={dashboard} />
@@ -690,12 +923,24 @@ function MonthCard({
   dashboard: MobileDashboardData | null;
 }) {
   const today = useMemo(() => new Date(), []);
+  const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null);
   const days = useMemo(() => buildMonthDays(today), [today]);
+  const monthItems = useMemo(
+    () => (dashboard ? buildSchedulesFromDashboard(dashboard) : schedules),
+    [dashboard],
+  );
+  const schedulesByDate = useMemo(
+    () => buildSchedulesByDate(monthItems, today),
+    [monthItems, today],
+  );
   const markers = useMemo(
     () => buildMonthMarkers(dashboard, today),
     [dashboard, today],
   );
   const monthTitle = `${today.getFullYear()}년 ${today.getMonth() + 1}월`;
+  const selectedItems = selectedDateKey
+    ? schedulesByDate.get(selectedDateKey) ?? []
+    : [];
 
   return (
     <View style={styles.monthCard}>
@@ -729,6 +974,7 @@ function MonthCard({
               : buildDateKey(
                   new Date(today.getFullYear(), today.getMonth(), day),
                 );
+          const isSelected = selectedDateKey === dayKey;
           const hasApproved = dashboard
             ? markers.approved.has(dayKey)
             : [8, 18, 26].includes(day ?? -1);
@@ -736,33 +982,78 @@ function MonthCard({
             ? markers.pending.has(dayKey)
             : [13, 28].includes(day ?? -1);
 
+          if (!day) {
+            return (
+              <View
+                key={`blank-${index}`}
+                style={styles.dayCell}
+              />
+            );
+          }
+
           return (
-            <View
-              key={`${day ?? "blank"}-${index}`}
-              style={[styles.dayCell, isToday && styles.todayCell]}
+            <Pressable
+              accessibilityLabel={`${day}일 일정 보기`}
+              accessibilityRole="button"
+              key={`${day}-${index}`}
+              onPress={() => setSelectedDateKey(dayKey)}
+              style={({ pressed }) => [
+                styles.dayCell,
+                isToday && styles.todayCell,
+                isSelected && styles.selectedDayCell,
+                pressed && styles.pressed,
+              ]}
             >
-              {day ? (
-                <>
-                  <Text
-                    style={[
-                      styles.dayText,
-                      index % 7 === 0 && styles.sundayText,
-                      index % 7 === 6 && styles.saturdayText,
-                      isToday && styles.todayText,
-                    ]}
-                  >
-                    {day}
-                  </Text>
-                  <View style={styles.dayDots}>
-                    {hasApproved ? <View style={styles.approvedDot} /> : null}
-                    {hasPending ? <View style={styles.pendingDot} /> : null}
-                  </View>
-                </>
-              ) : null}
-            </View>
+              <Text
+                style={[
+                  styles.dayText,
+                  index % 7 === 0 && styles.sundayText,
+                  index % 7 === 6 && styles.saturdayText,
+                  (isToday || isSelected) && styles.todayText,
+                ]}
+              >
+                {day}
+              </Text>
+              <View style={styles.dayDots}>
+                {hasApproved ? <View style={styles.approvedDot} /> : null}
+                {hasPending ? <View style={styles.pendingDot} /> : null}
+              </View>
+            </Pressable>
           );
         })}
       </View>
+      {selectedDateKey && selectedItems.length > 0 ? (
+        <View style={styles.dayPreview}>
+          <View style={styles.dayPreviewHeader}>
+            <Text style={styles.dayPreviewTitle}>
+              {formatDateKeyLabel(selectedDateKey)}
+            </Text>
+            <Text style={styles.dayPreviewCount}>
+              {selectedItems.length > 0
+                ? `일정 ${selectedItems.length}개`
+                : "일정 없음"}
+            </Text>
+          </View>
+          {selectedItems.map((item, index) => (
+              <View
+                key={`${item.title}-${item.time}-${index}`}
+                style={styles.dayPreviewItem}
+              >
+                <View style={styles.dayPreviewTop}>
+                  <Text numberOfLines={1} style={styles.dayPreviewItemTitle}>
+                    {item.title}
+                  </Text>
+                  <StatusPill
+                    approved={item.status === "확정"}
+                    label={item.status}
+                  />
+                </View>
+                <Text style={styles.dayPreviewTime}>{item.time}</Text>
+                <Text style={styles.dayPreviewRole}>{item.group}</Text>
+              </View>
+            ))}
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -792,10 +1083,12 @@ function ScheduleCard({
 function HostEventsScreen({
   dashboard,
   isLoading,
+  onRefresh,
   session,
 }: {
   dashboard: MobileDashboardData | null;
   isLoading: boolean;
+  onRefresh: () => Promise<void>;
   session: MobileSession | null;
 }) {
   const events = useMemo(() => buildHostedEventViews(dashboard), [dashboard]);
@@ -803,6 +1096,11 @@ function HostEventsScreen({
   return (
     <ScrollView
       contentContainerStyle={styles.screenContent}
+      refreshControl={
+        session ? (
+          <RefreshControl refreshing={isLoading} onRefresh={onRefresh} />
+        ) : undefined
+      }
       showsVerticalScrollIndicator={false}
     >
       <SectionHeader title="관리 중" />
@@ -844,10 +1142,12 @@ function HostEventsScreen({
 function JoinedScreen({
   dashboard,
   isLoading,
+  onRefresh,
   session,
 }: {
   dashboard: MobileDashboardData | null;
   isLoading: boolean;
+  onRefresh: () => Promise<void>;
   session: MobileSession | null;
 }) {
   const reservations = useMemo(
@@ -858,6 +1158,11 @@ function JoinedScreen({
   return (
     <ScrollView
       contentContainerStyle={styles.screenContent}
+      refreshControl={
+        session ? (
+          <RefreshControl refreshing={isLoading} onRefresh={onRefresh} />
+        ) : undefined
+      }
       showsVerticalScrollIndicator={false}
     >
       <SectionHeader title="내 예약" />
@@ -897,12 +1202,16 @@ function MyScreen({
   apiError,
   dashboard,
   isLoading,
+  onRefresh,
+  onSignOut,
   onSignIn,
   session,
 }: {
   apiError: string | null;
   dashboard: MobileDashboardData | null;
   isLoading: boolean;
+  onRefresh: () => Promise<void>;
+  onSignOut: () => Promise<void>;
   onSignIn: (email: string, password: string) => Promise<void>;
   session: MobileSession | null;
 }) {
@@ -926,6 +1235,11 @@ function MyScreen({
     <ScrollView
       contentContainerStyle={styles.screenContent}
       keyboardShouldPersistTaps="handled"
+      refreshControl={
+        session ? (
+          <RefreshControl refreshing={isLoading} onRefresh={onRefresh} />
+        ) : undefined
+      }
       showsVerticalScrollIndicator={false}
     >
       <View style={styles.profileCard}>
@@ -985,15 +1299,80 @@ function MyScreen({
               {dashboard?.reservations.length ?? 0}개
             </Text>
           </View>
+          <Pressable onPress={onSignOut} style={styles.settingRow}>
+            <Text style={styles.signOutText}>로그아웃</Text>
+            <Text style={styles.chevron}>›</Text>
+          </Pressable>
         </View>
       )}
     </ScrollView>
   );
 }
 
-function CreateEventScreen() {
+function CreateEventScreen({
+  apiError,
+  isLoading,
+  onCreateEvent,
+  session,
+}: {
+  apiError: string | null;
+  isLoading: boolean;
+  onCreateEvent: (payload: CreateEventPayload) => Promise<void>;
+  session: MobileSession | null;
+}) {
+  const today = useMemo(() => toDateInputValue(new Date()), []);
   const [bufferBefore, setBufferBefore] = useState(true);
   const [bufferAfter, setBufferAfter] = useState(true);
+  const [bufferMinutes, setBufferMinutes] = useState("30");
+  const [dailyEndTime, setDailyEndTime] = useState("18:00");
+  const [dailyStartTime, setDailyStartTime] = useState("09:00");
+  const [dateEnd, setDateEnd] = useState(today);
+  const [dateStart, setDateStart] = useState(today);
+  const [description, setDescription] = useState("");
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [title, setTitle] = useState("");
+
+  async function handleSubmit() {
+    setLocalError(null);
+
+    if (!session) {
+      setLocalError("로그인이 필요합니다.");
+      return;
+    }
+
+    if (!isDateInputValue(dateStart) || !isDateInputValue(dateEnd)) {
+      setLocalError("날짜는 YYYY-MM-DD 형식으로 입력해 주세요.");
+      return;
+    }
+
+    if (dateStart > dateEnd) {
+      setLocalError("시작일은 종료일보다 늦을 수 없습니다.");
+      return;
+    }
+
+    if (!isTimeInputValue(dailyStartTime) || !isTimeInputValue(dailyEndTime)) {
+      setLocalError("시간은 HH:MM 형식으로 입력해 주세요.");
+      return;
+    }
+
+    if (dailyStartTime >= dailyEndTime) {
+      setLocalError("시작 시간은 종료 시간보다 빨라야 합니다.");
+      return;
+    }
+
+    await onCreateEvent({
+      activeDates: buildDateList(dateStart, dateEnd),
+      bufferTimeMinutes: Number.parseInt(bufferMinutes, 10) || 0,
+      dailyEndTime,
+      dailyStartTime,
+      dateEnd,
+      dateStart,
+      description,
+      isBufferAfterActive: bufferAfter,
+      isBufferBeforeActive: bufferBefore,
+      title,
+    });
+  }
 
   return (
     <ScrollView
@@ -1001,56 +1380,114 @@ function CreateEventScreen() {
       keyboardShouldPersistTaps="handled"
       showsVerticalScrollIndicator={false}
     >
+      {!session ? (
+        <EmptyCard
+          detail="My 탭에서 로그인한 뒤 이벤트를 만들 수 있어요."
+          title="로그인이 필요해요"
+        />
+      ) : null}
       <View style={styles.formCard}>
         <Text style={styles.formLabel}>이벤트명</Text>
         <TextInput
+          onChangeText={setTitle}
           placeholder="졸업사진 일정"
           placeholderTextColor={SUBTLE}
           style={styles.input}
+          value={title}
         />
 
         <Text style={styles.formLabel}>설명</Text>
         <TextInput
           multiline
+          onChangeText={setDescription}
           placeholder="촬영 장소나 준비물을 적어두세요"
           placeholderTextColor={SUBTLE}
           style={[styles.input, styles.textArea]}
+          value={description}
         />
       </View>
 
       <View style={styles.formCard}>
         <View style={styles.formHeaderRow}>
-          <Text style={styles.formTitle}>가능 시간</Text>
-          <Text style={styles.formMeta}>30분 단위</Text>
+          <Text style={styles.formTitle}>일정</Text>
+          <Text style={styles.formMeta}>YYYY-MM-DD</Text>
         </View>
-        <View style={styles.dateChipRow}>
-          {["6/26 (금)", "6/27 (토)", "6/28 (일)"].map((date, index) => (
-            <View
-              key={date}
-              style={[styles.dateChip, index === 0 && styles.activeDateChip]}
-            >
-              <Text
-                style={[
-                  styles.dateChipText,
-                  index === 0 && styles.activeDateChipText,
-                ]}
-              >
-                {date}
-              </Text>
-            </View>
-          ))}
+        <View style={styles.formTwoColumn}>
+          <View style={styles.formColumn}>
+            <Text style={styles.formLabel}>시작일</Text>
+            <TextInput
+              keyboardType="numbers-and-punctuation"
+              onChangeText={setDateStart}
+              placeholder="2026-06-26"
+              placeholderTextColor={SUBTLE}
+              style={styles.input}
+              value={dateStart}
+            />
+          </View>
+          <View style={styles.formColumn}>
+            <Text style={styles.formLabel}>종료일</Text>
+            <TextInput
+              keyboardType="numbers-and-punctuation"
+              onChangeText={setDateEnd}
+              placeholder="2026-06-26"
+              placeholderTextColor={SUBTLE}
+              style={styles.input}
+              value={dateEnd}
+            />
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.formCard}>
+        <View style={styles.formHeaderRow}>
+          <Text style={styles.formTitle}>기본 시간</Text>
+          <Text style={styles.formMeta}>HH:MM</Text>
+        </View>
+        <View style={styles.formTwoColumn}>
+          <View style={styles.formColumn}>
+            <Text style={styles.formLabel}>시작 시간</Text>
+            <TextInput
+              keyboardType="numbers-and-punctuation"
+              onChangeText={setDailyStartTime}
+              placeholder="09:00"
+              placeholderTextColor={SUBTLE}
+              style={styles.input}
+              value={dailyStartTime}
+            />
+          </View>
+          <View style={styles.formColumn}>
+            <Text style={styles.formLabel}>종료 시간</Text>
+            <TextInput
+              keyboardType="numbers-and-punctuation"
+              onChangeText={setDailyEndTime}
+              placeholder="18:00"
+              placeholderTextColor={SUBTLE}
+              style={styles.input}
+              value={dailyEndTime}
+            />
+          </View>
         </View>
         <View style={styles.timePreview}>
           <View style={styles.timeBlock} />
-          <Text style={styles.timePreviewText}>오전 10:00 - 오후 06:00</Text>
+          <Text style={styles.timePreviewText}>
+            {dateStart} - {dateEnd} · {dailyStartTime} - {dailyEndTime}
+          </Text>
         </View>
       </View>
 
       <View style={styles.formCard}>
         <View style={styles.formHeaderRow}>
           <Text style={styles.formTitle}>버퍼</Text>
-          <Text style={styles.formMeta}>30분</Text>
+          <Text style={styles.formMeta}>{bufferMinutes || "0"}분</Text>
         </View>
+        <TextInput
+          keyboardType="number-pad"
+          onChangeText={setBufferMinutes}
+          placeholder="30"
+          placeholderTextColor={SUBTLE}
+          style={styles.input}
+          value={bufferMinutes}
+        />
         <ToggleRow
           active={bufferBefore}
           label="약속 전"
@@ -1063,9 +1500,15 @@ function CreateEventScreen() {
         />
       </View>
 
-      <Pressable style={styles.primaryButton}>
-        <Text style={styles.primaryButtonText}>이벤트 만들기</Text>
-      </Pressable>
+      {localError || apiError ? (
+        <Text style={styles.errorText}>{localError ?? apiError}</Text>
+      ) : null}
+      <PrimaryAction
+        disabled={isLoading || !session}
+        label="이벤트 만들기"
+        loading={isLoading}
+        onPress={handleSubmit}
+      />
     </ScrollView>
   );
 }
@@ -1447,6 +1890,71 @@ function buildMonthMarkers(
   return { approved, pending };
 }
 
+function buildSchedulesByDate(items: ScheduleItem[], monthDate: Date) {
+  const schedulesByDate = new Map<string, ScheduleItem[]>();
+
+  for (const item of items) {
+    const dateKey = getScheduleDateKey(item, monthDate.getFullYear());
+
+    if (!dateKey) {
+      continue;
+    }
+
+    const parsed = parseDateValue(dateKey);
+
+    if (
+      parsed.getFullYear() !== monthDate.getFullYear() ||
+      parsed.getMonth() !== monthDate.getMonth()
+    ) {
+      continue;
+    }
+
+    const current = schedulesByDate.get(dateKey) ?? [];
+
+    schedulesByDate.set(dateKey, [...current, item]);
+  }
+
+  for (const [dateKey, dateItems] of schedulesByDate) {
+    schedulesByDate.set(
+      dateKey,
+      [...dateItems].sort(
+        (left, right) =>
+          getScheduleSortTime(left) - getScheduleSortTime(right),
+      ),
+    );
+  }
+
+  return schedulesByDate;
+}
+
+function getScheduleDateKey(item: ScheduleItem, fallbackYear: number) {
+  if (item.startAt) {
+    return buildDateKey(parseDateValue(item.startAt));
+  }
+
+  const match = /^(\d{1,2})\/(\d{1,2})/.exec(item.date);
+
+  if (!match) {
+    return null;
+  }
+
+  return buildDateKey(
+    new Date(fallbackYear, Number(match[1]) - 1, Number(match[2])),
+  );
+}
+
+function getScheduleSortTime(item: ScheduleItem) {
+  if (item.startAt) {
+    return parseDateValue(item.startAt).getTime();
+  }
+
+  return 0;
+}
+
+function formatDateKeyLabel(dateKey: string) {
+  return formatDate(dateKey);
+}
+
 function formatDate(value: string) {
   const date = parseDateValue(value);
 
@@ -1517,6 +2025,31 @@ function buildDateKey(date: Date) {
   const day = String(date.getDate()).padStart(2, "0");
 
   return `${date.getFullYear()}-${month}-${day}`;
+}
+
+function buildDateList(dateStart: string, dateEnd: string) {
+  const dates: string[] = [];
+  const current = parseDateValue(dateStart);
+  const end = parseDateValue(dateEnd);
+
+  while (current.getTime() <= end.getTime()) {
+    dates.push(buildDateKey(current));
+    current.setDate(current.getDate() + 1);
+  }
+
+  return dates;
+}
+
+function isDateInputValue(value: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value));
+}
+
+function isTimeInputValue(value: string) {
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+}
+
+function toDateInputValue(date: Date) {
+  return buildDateKey(date);
 }
 
 const styles = StyleSheet.create({
@@ -1627,6 +2160,61 @@ const styles = StyleSheet.create({
     height: 7,
     marginTop: 4,
   },
+  dayPreview: {
+    backgroundColor: "#F9FAFB",
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 10,
+    marginTop: 12,
+    padding: 12,
+  },
+  dayPreviewCount: {
+    color: PRIMARY,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  dayPreviewHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  dayPreviewItem: {
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 5,
+    padding: 12,
+  },
+  dayPreviewItemTitle: {
+    color: INK,
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  dayPreviewRole: {
+    color: MUTED,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  dayPreviewTime: {
+    color: INK,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  dayPreviewTitle: {
+    color: INK,
+    fontFamily: serifFont,
+    fontSize: 17,
+    fontWeight: "700",
+  },
+  dayPreviewTop: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+    justifyContent: "space-between",
+  },
   dayText: {
     color: INK,
     fontSize: 14,
@@ -1685,10 +2273,18 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
   },
+  formColumn: {
+    flex: 1,
+    gap: 7,
+  },
   formTitle: {
     color: INK,
     fontSize: 17,
     fontWeight: "900",
+  },
+  formTwoColumn: {
+    flexDirection: "row",
+    gap: 10,
   },
   header: {
     alignItems: "center",
@@ -1961,6 +2557,9 @@ const styles = StyleSheet.create({
     backgroundColor: BACKGROUND,
     flex: 1,
   },
+  selectedDayCell: {
+    backgroundColor: PRIMARY,
+  },
   scheduleCard: {
     backgroundColor: BACKGROUND,
     borderColor: BORDER,
@@ -2040,6 +2639,11 @@ const styles = StyleSheet.create({
   },
   settingValue: {
     color: PRIMARY,
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  signOutText: {
+    color: "#B95050",
     fontSize: 15,
     fontWeight: "900",
   },
