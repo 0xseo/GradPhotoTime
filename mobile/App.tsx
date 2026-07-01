@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   BackHandler,
-  Linking,
   Modal,
   PanResponder,
   Platform,
@@ -77,6 +76,13 @@ type CreateEventPayload = {
   isBufferAfterActive: boolean;
   isBufferBeforeActive: boolean;
   title: string;
+};
+type UpdateEventDateRangePayload = {
+  activeDates: string[];
+  dailyEndTime: string;
+  dailyStartTime: string;
+  dateEnd: string;
+  dateStart: string;
 };
 type ReviewReservationPayload = {
   eventId: string;
@@ -282,6 +288,10 @@ type RenderContext = {
     blocks: MobileTimeBlockDraft[],
   ) => Promise<boolean>;
   onSetUnsavedChanges: (hasChanges: boolean) => void;
+  onUpdateEventDateRange: (
+    eventId: string,
+    payload: UpdateEventDateRangePayload,
+  ) => Promise<boolean>;
   onSignOut: () => Promise<void>;
   onSignIn: (email: string, password: string) => Promise<void>;
   onSignUp: (
@@ -479,6 +489,27 @@ async function deleteMobileEvent(eventId: string, token: string) {
       token,
     },
   );
+}
+
+async function updateMobileEventDateRange(
+  eventId: string,
+  payload: UpdateEventDateRangePayload,
+  token: string,
+) {
+  return apiRequest<{
+    event: {
+      daily_end_time: string;
+      daily_start_time: string;
+      date_end: string;
+      date_start: string;
+      event_code: string;
+      id: string;
+    };
+  }>(`/api/mobile/events/${encodeURIComponent(eventId)}`, {
+    body: JSON.stringify(payload),
+    method: "PATCH",
+    token,
+  });
 }
 
 async function saveMobileTimeBlocks(
@@ -1042,6 +1073,57 @@ function NativeShell() {
     }
   }
 
+  async function handleUpdateEventDateRange(
+    eventId: string,
+    payload: UpdateEventDateRangePayload,
+  ) {
+    if (!session?.accessToken) {
+      setApiError("로그인이 필요합니다.");
+      return false;
+    }
+
+    setApiError(null);
+    setIsApiLoading(true);
+
+    try {
+      let nextSession = await getUsableSession(session);
+
+      try {
+        await updateMobileEventDateRange(eventId, payload, nextSession.accessToken);
+      } catch (error) {
+        if (!isUnauthorizedError(error)) {
+          throw error;
+        }
+
+        nextSession = await refreshSession(session.refreshToken);
+        await updateMobileEventDateRange(
+          eventId,
+          payload,
+          nextSession.accessToken,
+        );
+      }
+
+      const { dashboard: nextDashboard, session: dashboardSession } =
+        await loadDashboardWithSession(nextSession);
+
+      setDashboard(nextDashboard);
+      setSession(dashboardSession);
+      await saveStoredSession(dashboardSession);
+      setSelectedHostEventId(eventId);
+      setHasUnsavedChanges(false);
+      return true;
+    } catch (error) {
+      setApiError(
+        error instanceof Error
+          ? error.message
+          : "날짜와 기본 시간을 저장하지 못했습니다.",
+      );
+      return false;
+    } finally {
+      setIsApiLoading(false);
+    }
+  }
+
   async function handleReviewReservation(payload: ReviewReservationPayload) {
     if (!session?.accessToken) {
       setApiError("로그인이 필요합니다.");
@@ -1333,6 +1415,7 @@ function NativeShell() {
     onSignOut: handleSignOut,
     onSignIn: handleSignIn,
     onSignUp: handleSignUp,
+    onUpdateEventDateRange: handleUpdateEventDateRange,
     onUpdateReservationManagement: handleUpdateReservationManagement,
     onCancelReservationManagement: handleCancelReservationManagement,
     selectedEventCode,
@@ -1543,6 +1626,7 @@ function renderRoute(route: RouteKey, context: RenderContext) {
         onReviewReservation={context.onReviewReservation}
         onSaveTimeBlocks={context.onSaveTimeBlocks}
         onSetUnsavedChanges={context.onSetUnsavedChanges}
+        onUpdateEventDateRange={context.onUpdateEventDateRange}
         session={context.session}
       />
     );
@@ -2032,6 +2116,7 @@ function HostEventManageScreen({
   onReviewReservation,
   onSaveTimeBlocks,
   onSetUnsavedChanges,
+  onUpdateEventDateRange,
   session,
 }: {
   event: MobileHostedEvent | null;
@@ -2044,9 +2129,14 @@ function HostEventManageScreen({
     blocks: MobileTimeBlockDraft[],
   ) => Promise<boolean>;
   onSetUnsavedChanges: (hasChanges: boolean) => void;
+  onUpdateEventDateRange: (
+    eventId: string,
+    payload: UpdateEventDateRangePayload,
+  ) => Promise<boolean>;
   session: MobileSession | null;
 }) {
   const [isDeleteConfirmVisible, setIsDeleteConfirmVisible] = useState(false);
+  const [isDateEditVisible, setIsDateEditVisible] = useState(false);
   const confirmedSlots = useMemo(
     () => sortSlots(event?.confirmedSlots ?? []),
     [event?.confirmedSlots],
@@ -2114,12 +2204,12 @@ function HostEventManageScreen({
             <View style={styles.manageHeroActions}>
               <Pressable
                 accessibilityRole="button"
-                onPress={() =>
-                  void Linking.openURL(`${API_BASE_URL}/host/events/${event.id}`)
-                }
+                disabled={isLoading}
+                onPress={() => setIsDateEditVisible(true)}
                 style={({ pressed }) => [
                   styles.manageEditButton,
-                  pressed && styles.pressed,
+                  isLoading && styles.primaryButtonDisabled,
+                  pressed && !isLoading && styles.pressed,
                 ]}
               >
                 <Text style={styles.manageEditButtonText}>
@@ -2189,6 +2279,20 @@ function HostEventManageScreen({
           )}
         </>
       ) : null}
+      {event && isDateEditVisible ? (
+        <EventDateTimeEditModal
+          event={event}
+          isSaving={isLoading}
+          onClose={() => setIsDateEditVisible(false)}
+          onSave={async (payload) => {
+            const didSave = await onUpdateEventDateRange(event.id, payload);
+
+            if (didSave) {
+              setIsDateEditVisible(false);
+            }
+          }}
+        />
+      ) : null}
       {event ? (
         <ConfirmDialog
           confirmLabel="삭제"
@@ -2204,6 +2308,199 @@ function HostEventManageScreen({
         />
       ) : null}
     </ScrollView>
+  );
+}
+
+function EventDateTimeEditModal({
+  event,
+  isSaving,
+  onClose,
+  onSave,
+}: {
+  event: MobileHostedEvent;
+  isSaving: boolean;
+  onClose: () => void;
+  onSave: (payload: UpdateEventDateRangePayload) => Promise<void>;
+}) {
+  const [dailyEndTime, setDailyEndTime] = useState(
+    () => trimClockValue(event.daily_end_time),
+  );
+  const [dailyStartTime, setDailyStartTime] = useState(
+    () => trimClockValue(event.daily_start_time),
+  );
+  const [dateEnd, setDateEnd] = useState(event.date_end);
+  const [dateStart, setDateStart] = useState(event.date_start);
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  function updateDateRange(nextStart: string, nextEnd: string) {
+    setDateStart(nextStart);
+    setDateEnd(nextEnd);
+  }
+
+  async function handleSave() {
+    setLocalError(null);
+
+    if (!isDateInputValue(dateStart) || !isDateInputValue(dateEnd)) {
+      setLocalError("날짜는 YYYY-MM-DD 형식으로 입력해 주세요.");
+      return;
+    }
+
+    if (dateStart > dateEnd) {
+      setLocalError("시작일은 종료일보다 늦을 수 없습니다.");
+      return;
+    }
+
+    if (!isTimeInputValue(dailyStartTime) || !isTimeInputValue(dailyEndTime)) {
+      setLocalError("시간은 HH:MM 형식으로 입력해 주세요.");
+      return;
+    }
+
+    if (dailyStartTime >= dailyEndTime) {
+      setLocalError("시작 시간은 종료 시간보다 빨라야 합니다.");
+      return;
+    }
+
+    await onSave({
+      activeDates: buildDateList(dateStart, dateEnd),
+      dailyEndTime,
+      dailyStartTime,
+      dateEnd,
+      dateStart,
+    });
+  }
+
+  return (
+    <Modal
+      animationType="slide"
+      onRequestClose={onClose}
+      transparent
+      visible
+    >
+      <Pressable
+        accessibilityRole="button"
+        disabled={isSaving}
+        onPress={onClose}
+        style={styles.modalBackdrop}
+      >
+        <Pressable
+          onPress={(nativeEvent) => nativeEvent.stopPropagation()}
+          style={styles.eventEditPanel}
+        >
+          <View style={styles.formHeaderRow}>
+            <View>
+              <Text style={styles.manageEyebrow}>EVENT SETTINGS</Text>
+              <Text style={styles.formTitle}>날짜/기본시간 수정</Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              disabled={isSaving}
+              onPress={onClose}
+              style={({ pressed }) => [
+                styles.headerBack,
+                pressed && !isSaving && styles.pressed,
+              ]}
+            >
+              <Text style={styles.headerBackText}>×</Text>
+            </Pressable>
+          </View>
+
+          <ScrollView
+            contentContainerStyle={styles.eventEditContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={styles.formTwoColumn}>
+              <View style={styles.formColumn}>
+                <Text style={styles.formLabel}>시작일</Text>
+                <TextInput
+                  keyboardType="numbers-and-punctuation"
+                  onChangeText={setDateStart}
+                  placeholder="2026-06-26"
+                  placeholderTextColor={SUBTLE}
+                  style={styles.input}
+                  value={dateStart}
+                />
+              </View>
+              <View style={styles.formColumn}>
+                <Text style={styles.formLabel}>종료일</Text>
+                <TextInput
+                  keyboardType="numbers-and-punctuation"
+                  onChangeText={setDateEnd}
+                  placeholder="2026-06-26"
+                  placeholderTextColor={SUBTLE}
+                  style={styles.input}
+                  value={dateEnd}
+                />
+              </View>
+            </View>
+            <DateRangeCalendarPicker
+              dateEnd={dateEnd}
+              dateStart={dateStart}
+              onChange={updateDateRange}
+            />
+            <View style={styles.formTwoColumn}>
+              <View style={styles.formColumn}>
+                <Text style={styles.formLabel}>시작 시간</Text>
+                <TextInput
+                  keyboardType="numbers-and-punctuation"
+                  onChangeText={setDailyStartTime}
+                  placeholder="09:00"
+                  placeholderTextColor={SUBTLE}
+                  style={styles.input}
+                  value={dailyStartTime}
+                />
+              </View>
+              <View style={styles.formColumn}>
+                <Text style={styles.formLabel}>종료 시간</Text>
+                <TextInput
+                  keyboardType="numbers-and-punctuation"
+                  onChangeText={setDailyEndTime}
+                  placeholder="18:00"
+                  placeholderTextColor={SUBTLE}
+                  style={styles.input}
+                  value={dailyEndTime}
+                />
+              </View>
+            </View>
+            <Text style={styles.dateRangeHint}>
+              저장하면 이 이벤트의 관리/예약 달력 표시 범위가 함께 바뀌어요.
+            </Text>
+            {localError ? <Text style={styles.errorText}>{localError}</Text> : null}
+          </ScrollView>
+
+          <View style={styles.eventEditActions}>
+            <Pressable
+              accessibilityRole="button"
+              disabled={isSaving}
+              onPress={onClose}
+              style={({ pressed }) => [
+                styles.confirmCancelButton,
+                isSaving && styles.primaryButtonDisabled,
+                pressed && !isSaving && styles.pressed,
+              ]}
+            >
+              <Text style={styles.confirmCancelText}>닫기</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              disabled={isSaving}
+              onPress={handleSave}
+              style={({ pressed }) => [
+                styles.confirmButton,
+                isSaving && styles.primaryButtonDisabled,
+                pressed && !isSaving && styles.pressed,
+              ]}
+            >
+              {isSaving ? (
+                <ActivityIndicator color={BACKGROUND} size="small" />
+              ) : (
+                <Text style={styles.confirmButtonText}>저장</Text>
+              )}
+            </Pressable>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -6132,6 +6429,12 @@ function formatTimeFromClock(value: string) {
   return `${period} ${String(hour12).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
+function trimClockValue(value: string) {
+  const [hoursText = "00", minutesText = "00"] = value.split(":");
+
+  return `${hoursText.padStart(2, "0")}:${minutesText.padStart(2, "0")}`;
+}
+
 function statusLabel(status: MobileGuestReservation["status"]) {
   if (status === "APPROVED") {
     return "확정";
@@ -6668,6 +6971,27 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "space-between",
+  },
+  eventEditActions: {
+    borderTopColor: BORDER,
+    borderTopWidth: 1,
+    flexDirection: "row",
+    gap: 10,
+    paddingTop: 14,
+  },
+  eventEditContent: {
+    gap: 12,
+    paddingBottom: 10,
+  },
+  eventEditPanel: {
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 10,
+    borderWidth: 1,
+    gap: 14,
+    maxHeight: "90%",
+    padding: 16,
+    width: "100%",
   },
   formCard: {
     backgroundColor: BACKGROUND,

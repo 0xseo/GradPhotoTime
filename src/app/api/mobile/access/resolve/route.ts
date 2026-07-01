@@ -63,6 +63,23 @@ export async function POST(request: Request) {
     }
 
     if (eventResult.data) {
+      if (user && eventResult.data.host_id !== user.id) {
+        const existingReservation = await findExistingUserReservationForEvent(
+          admin,
+          eventResult.data.id,
+          user.id,
+        );
+
+        if (existingReservation) {
+          return mobileOk<ResolveAccessCodeData>({
+            code: existingReservation.reservation_access_code,
+            isHost: false,
+            kind: "reservation",
+            targetId: existingReservation.id,
+          });
+        }
+      }
+
       return mobileOk<ResolveAccessCodeData>({
         code: eventResult.data.event_code,
         isHost: Boolean(user && eventResult.data.host_id === user.id),
@@ -82,4 +99,57 @@ export async function POST(request: Request) {
 
 function normalizeAccessCode(value: string) {
   return value.replace(/[^a-z0-9]/gi, "").toUpperCase();
+}
+
+async function findExistingUserReservationForEvent(
+  admin: ReturnType<typeof createSupabaseAdminClient>,
+  eventId: string,
+  userId: string,
+) {
+  const { data: createdReservations, error: createdError } = await admin
+    .from("reservations")
+    .select("id,reservation_access_code,created_at")
+    .eq("event_id", eventId)
+    .eq("creator_id", userId)
+    .in("status", ["PENDING", "APPROVED"])
+    .order("created_at", { ascending: false });
+
+  if (createdError) {
+    throw new Error(createdError.message);
+  }
+
+  const { data: participantRows, error: participantError } = await admin
+    .from("reservation_participants")
+    .select("reservation_id")
+    .eq("user_id", userId);
+
+  if (participantError) {
+    throw new Error(participantError.message);
+  }
+
+  const participantReservationIds = [
+    ...new Set(participantRows?.map((row) => row.reservation_id) ?? []),
+  ];
+  const { data: participantReservations, error: reservationError } =
+    participantReservationIds.length > 0
+      ? await admin
+          .from("reservations")
+          .select("id,reservation_access_code,created_at")
+          .eq("event_id", eventId)
+          .in("id", participantReservationIds)
+          .in("status", ["PENDING", "APPROVED"])
+      : { data: [], error: null };
+
+  if (reservationError) {
+    throw new Error(reservationError.message);
+  }
+
+  return [
+    ...(createdReservations ?? []),
+    ...(participantReservations ?? []),
+  ].sort(
+    (left, right) =>
+      new Date(right.created_at).getTime() -
+      new Date(left.created_at).getTime(),
+  )[0];
 }
