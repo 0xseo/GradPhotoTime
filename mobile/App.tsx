@@ -3845,6 +3845,44 @@ function DateRangeCalendarPicker({
     });
   }, [dateEnd, dateStart, onChange]);
 
+  const beginDateDragFromLocation = useCallback((
+    locationX: number,
+    locationY: number,
+    gesture?: { dx: number; dy: number },
+  ) => {
+    const startDate = getDateFromLocation(
+      locationX - (gesture?.dx ?? 0),
+      locationY - (gesture?.dy ?? 0),
+    );
+    const currentDate = getDateFromLocation(locationX, locationY);
+    const seedDate = startDate ?? currentDate;
+
+    if (!seedDate || !currentDate) {
+      return;
+    }
+
+    const nextDrag = {
+      baseActiveDates: normalizedActiveDates,
+      currentDate,
+      shouldActivate: !activeDateSet.has(seedDate),
+      startDate: seedDate,
+    };
+
+    dragRef.current = nextDrag;
+    setCommitState(null);
+    setDragState(nextDrag);
+  }, [activeDateSet, getDateFromLocation, normalizedActiveDates]);
+
+  const handlePressDate = useCallback((dayKey: string) => {
+    commitActiveDates(
+      applyActiveDateSelection(
+        normalizedActiveDates,
+        [dayKey],
+        !activeDateSet.has(dayKey),
+      ),
+    );
+  }, [activeDateSet, commitActiveDates, normalizedActiveDates]);
+
   useEffect(() => {
     const current = commitState;
 
@@ -3872,30 +3910,21 @@ function DateRangeCalendarPicker({
       // PanResponder needs synchronous gesture refs so fast taps commit before React flushes preview state.
       // eslint-disable-next-line react-hooks/refs
       PanResponder.create({
-        onMoveShouldSetPanResponder: () => gridWidth > 0,
-        onStartShouldSetPanResponder: () => gridWidth > 0,
-        onPanResponderGrant: (event) => {
-          const nextDate = getDateFromLocation(
+        onMoveShouldSetPanResponder: (_, gestureState) =>
+          gridWidth > 0 &&
+          Math.abs(gestureState.dx) + Math.abs(gestureState.dy) > 4,
+        onMoveShouldSetPanResponderCapture: (_, gestureState) =>
+          gridWidth > 0 &&
+          Math.abs(gestureState.dx) + Math.abs(gestureState.dy) > 4,
+        onStartShouldSetPanResponder: () => false,
+        onPanResponderGrant: (event, gestureState) => {
+          beginDateDragFromLocation(
             event.nativeEvent.locationX,
             event.nativeEvent.locationY,
+            gestureState,
           );
-
-          if (!nextDate) {
-            return;
-          }
-
-          const nextDrag = {
-            baseActiveDates: normalizedActiveDates,
-            currentDate: nextDate,
-            shouldActivate: !activeDateSet.has(nextDate),
-            startDate: nextDate,
-          };
-
-          dragRef.current = nextDrag;
-          setCommitState(null);
-          setDragState(nextDrag);
         },
-        onPanResponderMove: (event) => {
+        onPanResponderMove: (event, gestureState) => {
           const nextDate = getDateFromLocation(
             event.nativeEvent.locationX,
             event.nativeEvent.locationY,
@@ -3906,6 +3935,11 @@ function DateRangeCalendarPicker({
           }
 
           if (!dragRef.current) {
+            beginDateDragFromLocation(
+              event.nativeEvent.locationX,
+              event.nativeEvent.locationY,
+              gestureState,
+            );
             return;
           }
 
@@ -3936,10 +3970,9 @@ function DateRangeCalendarPicker({
         },
       }),
     [
-      activeDateSet,
+      beginDateDragFromLocation,
       getDateFromLocation,
       gridWidth,
-      normalizedActiveDates,
     ],
   );
 
@@ -4043,11 +4076,13 @@ function DateRangeCalendarPicker({
           const isToday = dayKey === todayKey;
 
           return (
-            <View
-              key={dayKey ?? `blank-${index}`}
-              style={[styles.dateRangeDay, { height: cellHeight }]}
-            >
-              {dayKey ? (
+            dayKey ? (
+              <Pressable
+                accessibilityRole="button"
+                key={dayKey}
+                onPress={() => handlePressDate(dayKey)}
+                style={[styles.dateRangeDay, { height: cellHeight }]}
+              >
                 <View
                   pointerEvents="none"
                   style={[
@@ -4059,8 +4094,6 @@ function DateRangeCalendarPicker({
                     isPreviewOff && styles.dateRangeDayInactivePreview,
                   ]}
                 />
-              ) : null}
-              {dayKey ? (
                 <Text
                   style={[
                     styles.dateRangeDayText,
@@ -4072,9 +4105,14 @@ function DateRangeCalendarPicker({
                 >
                   {Number(dayKey.slice(-2))}
                 </Text>
-              ) : null}
-              {isToday ? <View style={styles.dateRangeTodayDot} /> : null}
-            </View>
+                {isToday ? <View style={styles.dateRangeTodayDot} /> : null}
+              </Pressable>
+            ) : (
+              <View
+                key={`blank-${index}`}
+                style={[styles.dateRangeDay, { height: cellHeight }]}
+              />
+            )
           );
         })}
       </View>
@@ -5730,38 +5768,68 @@ function DraggableTimelineSelectionLayer({
     }
   }, [cells, commitState, onCommit]);
 
+  const beginTimelineDragFromLocation = useCallback((
+    locationY: number,
+    gesture?: { dy: number },
+  ) => {
+    const startIndex = getTimelineCellIndexFromY(
+      locationY - (gesture?.dy ?? 0),
+      cells,
+      timelineStart,
+    );
+    const currentIndex = getTimelineCellIndexFromY(
+      locationY,
+      cells,
+      timelineStart,
+    );
+    const seedCell = cells[startIndex] ?? cells[currentIndex];
+
+    if (!seedCell || !cells[currentIndex]) {
+      return;
+    }
+
+    const nextDrag = {
+      currentIndex,
+      shouldSelect: !isSelected(seedCell),
+      startIndex: cells[startIndex] ? startIndex : currentIndex,
+    };
+
+    dragRef.current = nextDrag;
+    setCommitState(null);
+    setDragState(nextDrag);
+  }, [cells, isSelected, timelineStart]);
+
+  const handlePressCell = useCallback((cell: MobileTimelineCell) => {
+    onCommit(
+      {
+        endAt: cell.endAt,
+        startAt: cell.startAt,
+      },
+      !isSelected(cell),
+    );
+  }, [isSelected, onCommit]);
+
   const panResponder = useMemo(
     () =>
       // PanResponder needs synchronous gesture refs so fast taps commit before React flushes preview state.
       // eslint-disable-next-line react-hooks/refs
       PanResponder.create({
-        onMoveShouldSetPanResponder: () =>
-          !disabled && cells.length > 0,
-        onStartShouldSetPanResponder: () =>
-          !disabled && cells.length > 0,
-        onPanResponderGrant: (event) => {
-          const cellIndex = getTimelineCellIndexFromY(
+        onMoveShouldSetPanResponder: (_, gestureState) =>
+          !disabled &&
+          cells.length > 0 &&
+          Math.abs(gestureState.dy) > 4,
+        onMoveShouldSetPanResponderCapture: (_, gestureState) =>
+          !disabled &&
+          cells.length > 0 &&
+          Math.abs(gestureState.dy) > 4,
+        onStartShouldSetPanResponder: () => false,
+        onPanResponderGrant: (event, gestureState) => {
+          beginTimelineDragFromLocation(
             event.nativeEvent.locationY,
-            cells,
-            timelineStart,
+            gestureState,
           );
-          const cell = cells[cellIndex];
-
-          if (!cell) {
-            return;
-          }
-
-          const nextDrag = {
-            currentIndex: cellIndex,
-            shouldSelect: !isSelected(cell),
-            startIndex: cellIndex,
-          };
-
-          dragRef.current = nextDrag;
-          setCommitState(null);
-          setDragState(nextDrag);
         },
-        onPanResponderMove: (event) => {
+        onPanResponderMove: (event, gestureState) => {
           const cellIndex = getTimelineCellIndexFromY(
             event.nativeEvent.locationY,
             cells,
@@ -5769,6 +5837,12 @@ function DraggableTimelineSelectionLayer({
           );
 
           if (!dragRef.current || cellIndex === dragRef.current.currentIndex) {
+            if (!dragRef.current) {
+              beginTimelineDragFromLocation(
+                event.nativeEvent.locationY,
+                gestureState,
+              );
+            }
             return;
           }
 
@@ -5796,7 +5870,7 @@ function DraggableTimelineSelectionLayer({
           setDragState(null);
         },
       }),
-    [cells, disabled, isSelected, timelineStart],
+    [beginTimelineDragFromLocation, cells, disabled, timelineStart],
   );
   const previewRange = dragState
     ? buildTimelineRangeFromIndexes(
@@ -5808,6 +5882,24 @@ function DraggableTimelineSelectionLayer({
 
   return (
     <View style={styles.timelineDragLayer} {...panResponder.panHandlers}>
+      {cells.map((cell) => (
+        <Pressable
+          accessibilityRole="button"
+          disabled={disabled}
+          key={cell.startAt}
+          onPress={() => handlePressCell(cell)}
+          style={[
+            styles.timelineTapCell,
+            getTimelineSelectionOverlayStyle(
+              {
+                end: cell.endMinute,
+                start: cell.startMinute,
+              },
+              timelineStart,
+            ),
+          ]}
+        />
+      ))}
       {previewRange ? (
         <View
           pointerEvents="none"
@@ -8765,6 +8857,11 @@ const styles = StyleSheet.create({
   },
   timelineDragPreviewTextRemove: {
     color: "#B95050",
+  },
+  timelineTapCell: {
+    left: 0,
+    position: "absolute",
+    right: 0,
   },
   todayCell: {
     backgroundColor: PRIMARY,
