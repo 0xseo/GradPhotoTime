@@ -19,7 +19,7 @@ import {
 } from "react-native-safe-area-context";
 
 type TabKey = "events" | "calendar" | "joined" | "my";
-type RouteKey = TabKey | "create" | "access" | "eventManage";
+type RouteKey = TabKey | "create" | "access" | "eventManage" | "eventReserve";
 type QuickAction = {
   label: string;
   route: RouteKey;
@@ -63,6 +63,13 @@ type ReviewReservationPayload = {
   reservationId: string;
   slotId: string;
   status: "APPROVED" | "PENDING";
+};
+type CreateReservationPayload = {
+  eventId: string;
+  headcount: number;
+  participants: Array<{ guestName: string; userId?: string }>;
+  password?: string | null;
+  requestedSlots: Array<{ endAt: string; startAt: string }>;
 };
 type ApiResult<T> =
   | {
@@ -161,6 +168,42 @@ type MobileDashboardData = {
   reservations: MobileGuestReservation[];
   user: MobileUser;
 };
+type MobileEventDetail = {
+  activeDates: string[];
+  bufferOverrides: Array<{
+    custom_end_at?: string | null;
+    custom_start_at?: string | null;
+    is_active: boolean;
+    reservation_slot_id: string;
+    side: string;
+  }>;
+  event: {
+    buffer_time_minutes: number;
+    daily_end_time: string;
+    daily_start_time: string;
+    date_end: string;
+    date_start: string;
+    description: string | null;
+    event_code: string;
+    id: string;
+    is_buffer_active: boolean;
+    is_buffer_after_active: boolean;
+    is_buffer_before_active: boolean;
+    title: string;
+  };
+  reservationSlots: MobileDashboardSlot[];
+  timeBlocks: MobileTimeBlock[];
+};
+type MobileCreatedReservation = {
+  eventCode: string;
+  reservation: {
+    headcount: number;
+    id: string;
+    reservation_access_code: string;
+    slots: MobileDashboardSlot[];
+    status: MobileGuestReservation["status"];
+  };
+};
 type AccessPreview =
   | {
       code: string;
@@ -184,6 +227,10 @@ type RenderContext = {
   onCreateEvent: (payload: CreateEventPayload) => Promise<void>;
   onOpenHostEvent: (eventId: string) => void;
   onRefreshDashboard: () => Promise<void>;
+  onCreateReservation: (
+    payload: CreateReservationPayload,
+  ) => Promise<MobileCreatedReservation | null>;
+  onOpenEventReservation: (eventCode: string) => void;
   onReviewReservation: (payload: ReviewReservationPayload) => Promise<void>;
   onResolveCode: (code: string) => Promise<void>;
   onSaveTimeBlocks: (
@@ -198,6 +245,7 @@ type RenderContext = {
     passwordConfirm: string,
   ) => Promise<string>;
   selectedHostEventId: string | null;
+  selectedEventCode: string | null;
   session: MobileSession | null;
 };
 
@@ -410,6 +458,17 @@ async function reviewMobileReservation(
   );
 }
 
+async function createMobileReservation(
+  payload: CreateReservationPayload,
+  token?: string,
+) {
+  return apiRequest<MobileCreatedReservation>("/api/mobile/reservations", {
+    body: JSON.stringify(payload),
+    method: "POST",
+    token,
+  });
+}
+
 async function resolveCode(code: string, token?: string) {
   return apiRequest<{
     code: string;
@@ -423,20 +482,14 @@ async function resolveCode(code: string, token?: string) {
   });
 }
 
+async function loadMobileEventDetail(eventCode: string) {
+  return apiRequest<MobileEventDetail>(
+    `/api/mobile/events/${encodeURIComponent(eventCode)}`,
+  );
+}
+
 async function loadEventPreview(eventCode: string) {
-  const data = await apiRequest<{
-    activeDates: string[];
-    event: {
-      date_end: string;
-      date_start: string;
-      description: string | null;
-      event_code: string;
-      id: string;
-      title: string;
-    };
-    reservationSlots: unknown[];
-    timeBlocks: unknown[];
-  }>(`/api/mobile/events/${encodeURIComponent(eventCode)}`);
+  const data = await loadMobileEventDetail(eventCode);
 
   return {
     code: data.event.event_code,
@@ -561,6 +614,9 @@ function NativeShell() {
   const [selectedHostEventId, setSelectedHostEventId] = useState<string | null>(
     null,
   );
+  const [selectedEventCode, setSelectedEventCode] = useState<string | null>(
+    null,
+  );
   const [session, setSession] = useState<MobileSession | null>(null);
   const [isQuickOpen, setIsQuickOpen] = useState(false);
   const quickActions = useMemo(() => getQuickActions(activeTab), [activeTab]);
@@ -622,6 +678,7 @@ function NativeShell() {
     setActiveTab(tab);
     setRoute(tab);
     setSelectedHostEventId(null);
+    setSelectedEventCode(null);
     setIsQuickOpen(false);
   }
 
@@ -633,7 +690,16 @@ function NativeShell() {
   function openHostEvent(eventId: string) {
     setActiveTab("events");
     setSelectedHostEventId(eventId);
+    setSelectedEventCode(null);
     setRoute("eventManage");
+    setIsQuickOpen(false);
+  }
+
+  function openEventReservation(eventCode: string) {
+    setActiveTab("joined");
+    setSelectedEventCode(eventCode);
+    setSelectedHostEventId(null);
+    setRoute("eventReserve");
     setIsQuickOpen(false);
   }
 
@@ -864,6 +930,51 @@ function NativeShell() {
     }
   }
 
+  async function handleCreateReservation(payload: CreateReservationPayload) {
+    setApiError(null);
+    setIsApiLoading(true);
+
+    try {
+      let nextSession = session ? await getUsableSession(session) : null;
+      let createdReservation: MobileCreatedReservation;
+
+      try {
+        createdReservation = await createMobileReservation(
+          payload,
+          nextSession?.accessToken,
+        );
+      } catch (error) {
+        if (!nextSession || !isUnauthorizedError(error)) {
+          throw error;
+        }
+
+        nextSession = await refreshSession(session!.refreshToken);
+        createdReservation = await createMobileReservation(
+          payload,
+          nextSession.accessToken,
+        );
+      }
+
+      if (nextSession) {
+        const { dashboard: nextDashboard, session: dashboardSession } =
+          await loadDashboardWithSession(nextSession);
+
+        setDashboard(nextDashboard);
+        setSession(dashboardSession);
+        await saveStoredSession(dashboardSession);
+      }
+
+      return createdReservation;
+    } catch (error) {
+      setApiError(
+        error instanceof Error ? error.message : "예약 생성에 실패했습니다.",
+      );
+      return null;
+    } finally {
+      setIsApiLoading(false);
+    }
+  }
+
   async function handleResolveCode(code: string) {
     const trimmedCode = code.trim();
 
@@ -917,6 +1028,8 @@ function NativeShell() {
     dashboard,
     isApiLoading: isBusy,
     onCreateEvent: handleCreateEvent,
+    onCreateReservation: handleCreateReservation,
+    onOpenEventReservation: openEventReservation,
     onOpenHostEvent: openHostEvent,
     onRefreshDashboard: handleRefreshDashboard,
     onReviewReservation: handleReviewReservation,
@@ -925,6 +1038,7 @@ function NativeShell() {
     onSignOut: handleSignOut,
     onSignIn: handleSignIn,
     onSignUp: handleSignUp,
+    selectedEventCode,
     selectedHostEventId,
     session,
   };
@@ -1060,7 +1174,10 @@ function Header({
   onBack: () => void;
 }) {
   const isModalRoute =
-    route === "create" || route === "access" || route === "eventManage";
+    route === "create" ||
+    route === "access" ||
+    route === "eventManage" ||
+    route === "eventReserve";
 
   return (
     <View style={styles.header}>
@@ -1159,7 +1276,20 @@ function renderRoute(route: RouteKey, context: RenderContext) {
         accessPreview={context.accessPreview}
         apiError={context.apiError}
         isLoading={context.isApiLoading}
+        onOpenEventReservation={context.onOpenEventReservation}
         onResolveCode={context.onResolveCode}
+      />
+    );
+  }
+
+  if (route === "eventReserve") {
+    return (
+      <EventReserveScreen
+        apiError={context.apiError}
+        eventCode={context.selectedEventCode}
+        isLoading={context.isApiLoading}
+        onCreateReservation={context.onCreateReservation}
+        session={context.session}
       />
     );
   }
@@ -2487,11 +2617,13 @@ function AccessScreen({
   accessPreview,
   apiError,
   isLoading,
+  onOpenEventReservation,
   onResolveCode,
 }: {
   accessPreview: AccessPreview | null;
   apiError: string | null;
   isLoading: boolean;
+  onOpenEventReservation: (eventCode: string) => void;
   onResolveCode: (code: string) => Promise<void>;
 }) {
   const [code, setCode] = useState("");
@@ -2532,9 +2664,474 @@ function AccessScreen({
               <Text style={styles.eventCode}>{accessPreview.code}</Text>
             </View>
             <Text style={styles.previewSubtitle}>{accessPreview.subtitle}</Text>
+            {accessPreview.kind === "event" ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => onOpenEventReservation(accessPreview.code)}
+                style={({ pressed }) => [
+                  styles.previewAction,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.previewActionText}>예약하기</Text>
+              </Pressable>
+            ) : null}
           </View>
         ) : null}
       </View>
+    </ScrollView>
+  );
+}
+
+function EventReserveScreen({
+  apiError,
+  eventCode,
+  isLoading,
+  onCreateReservation,
+  session,
+}: {
+  apiError: string | null;
+  eventCode: string | null;
+  isLoading: boolean;
+  onCreateReservation: (
+    payload: CreateReservationPayload,
+  ) => Promise<MobileCreatedReservation | null>;
+  session: MobileSession | null;
+}) {
+  const [createdReservation, setCreatedReservation] =
+    useState<MobileCreatedReservation | null>(null);
+  const [eventDetail, setEventDetail] = useState<MobileEventDetail | null>(null);
+  const [headcount, setHeadcount] = useState("1");
+  const [isEventLoading, setIsEventLoading] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [participantNames, setParticipantNames] = useState(
+    session?.user.email?.split("@")[0] ?? "",
+  );
+  const [password, setPassword] = useState("");
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [selectedSlots, setSelectedSlots] = useState<
+    Array<{ endAt: string; startAt: string }>
+  >([]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadDetail() {
+      if (!eventCode) {
+        return;
+      }
+
+      setCreatedReservation(null);
+      setEventDetail(null);
+      setIsEventLoading(true);
+      setLocalError(null);
+      setSelectedSlots([]);
+
+      try {
+        const detail = await loadMobileEventDetail(eventCode);
+
+        if (isMounted) {
+          setEventDetail(detail);
+          setSelectedDate(
+            detail.activeDates.includes(buildDateKey(new Date()))
+              ? buildDateKey(new Date())
+              : detail.activeDates[0] ?? detail.event.date_start,
+          );
+        }
+      } catch (error) {
+        if (isMounted) {
+          setLocalError(
+            error instanceof Error
+              ? error.message
+              : "이벤트 정보를 불러오지 못했습니다.",
+          );
+        }
+      } finally {
+        if (isMounted) {
+          setIsEventLoading(false);
+        }
+      }
+    }
+
+    void loadDetail();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [eventCode]);
+
+  if (!eventCode) {
+    return (
+      <ScrollView contentContainerStyle={styles.screenContent}>
+        <EmptyCard detail="코드 입력 화면에서 이벤트를 먼저 열어 주세요." title="이벤트가 없어요" />
+      </ScrollView>
+    );
+  }
+
+  const currentDate =
+    selectedDate && eventDetail?.activeDates.includes(selectedDate)
+      ? selectedDate
+      : eventDetail?.activeDates[0] ?? null;
+  const startMinute = eventDetail
+    ? getDailyStartMinute(eventDetail.event.daily_start_time)
+    : 540;
+  const endMinute = eventDetail
+    ? getDailyEndMinute(eventDetail.event.daily_start_time, eventDetail.event.daily_end_time)
+    : 1080;
+  const timelineRows = buildTimelineRows(startMinute, endMinute);
+  const timelineHeight = Math.max(
+    ((endMinute - startMinute) / 60) * MANAGE_TIMELINE_HOUR_HEIGHT,
+    MANAGE_TIMELINE_HOUR_HEIGHT,
+  );
+  const cells =
+    eventDetail && currentDate
+      ? buildAvailabilityCells(
+          currentDate,
+          eventDetail.event.daily_start_time,
+          eventDetail.event.daily_end_time,
+        )
+      : [];
+  const confirmedSlots = eventDetail?.reservationSlots.filter(
+    (slot) => slot.is_confirmed,
+  ) ?? [];
+  const visibleConfirmedSlots = currentDate
+    ? confirmedSlots
+        .map((slot) => ({
+          overlap: getSlotOverlapMinutes(slot, currentDate),
+          slot,
+        }))
+        .filter(
+          (
+            item,
+          ): item is {
+            overlap: { end: number; start: number };
+            slot: MobileDashboardSlot;
+          } => item.overlap !== null,
+        )
+    : [];
+  const visibleBufferRanges =
+    eventDetail && currentDate
+      ? buildMobileBufferRanges(eventDetail, confirmedSlots)
+          .map((range) => ({
+            overlap: getRangeOverlapMinutes(range, currentDate),
+            range,
+          }))
+          .filter(
+            (
+              item,
+            ): item is {
+              overlap: { end: number; start: number };
+              range: { endAt: string; startAt: string };
+            } => item.overlap !== null,
+          )
+      : [];
+
+  async function handleSubmit() {
+    if (!eventDetail) {
+      return;
+    }
+
+    setLocalError(null);
+
+    const parsedHeadcount = Number.parseInt(headcount, 10);
+    const participants = parseParticipantNames(participantNames).map(
+      (guestName, index) => ({
+        guestName,
+        userId: index === 0 ? session?.user.id : undefined,
+      }),
+    );
+
+    if (!Number.isInteger(parsedHeadcount) || parsedHeadcount < 1) {
+      setLocalError("총 인원수를 입력해 주세요.");
+      return;
+    }
+
+    if (participants.length === 0) {
+      setLocalError("참여자 이름을 하나 이상 입력해 주세요.");
+      return;
+    }
+
+    if (participants.length > parsedHeadcount) {
+      setLocalError("참여자 수는 총 인원수를 초과할 수 없습니다.");
+      return;
+    }
+
+    if (selectedSlots.length === 0) {
+      setLocalError("예약 후보 시간을 하나 이상 선택해 주세요.");
+      return;
+    }
+
+    const reservation = await onCreateReservation({
+      eventId: eventDetail.event.id,
+      headcount: parsedHeadcount,
+      participants,
+      password: password || null,
+      requestedSlots: selectedSlots,
+    });
+
+    if (reservation) {
+      setCreatedReservation(reservation);
+    }
+  }
+
+  return (
+    <ScrollView
+      contentContainerStyle={styles.screenContent}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+    >
+      {isEventLoading ? <LoadingCard label="이벤트를 불러오는 중" /> : null}
+      {localError || apiError ? (
+        <Text style={styles.errorText}>{localError ?? apiError}</Text>
+      ) : null}
+      {eventDetail ? (
+        <>
+          <View style={styles.reserveHero}>
+            <View style={styles.scheduleTop}>
+              <View style={styles.previewTextBlock}>
+                <Text style={styles.manageEyebrow}>EVENT</Text>
+                <Text style={styles.manageTitle}>{eventDetail.event.title}</Text>
+              </View>
+              <Text style={styles.manageCode}>{eventDetail.event.event_code}</Text>
+            </View>
+            <Text style={styles.manageMeta}>
+              {formatDate(eventDetail.event.date_start)} -{" "}
+              {formatDate(eventDetail.event.date_end)}
+            </Text>
+            <Text style={styles.manageMeta}>
+              {formatTimeFromClock(eventDetail.event.daily_start_time)} -{" "}
+              {formatTimeFromClock(eventDetail.event.daily_end_time)}
+            </Text>
+            {eventDetail.event.description ? (
+              <Text style={styles.reserveDescription}>
+                {eventDetail.event.description}
+              </Text>
+            ) : null}
+          </View>
+
+          {createdReservation ? (
+            <View style={styles.successCard}>
+              <Text style={styles.successTitle}>예약 신청 완료</Text>
+              <Text style={styles.successText}>
+                예약 관리 코드 {createdReservation.reservation.reservation_access_code}
+              </Text>
+              <Text style={styles.successMeta}>
+                후보 {createdReservation.reservation.slots.length}개 · 상태 대기
+              </Text>
+            </View>
+          ) : null}
+
+          <View style={styles.formCard}>
+            <View style={styles.formHeaderRow}>
+              <Text style={styles.formTitle}>예약 정보</Text>
+              <Text style={styles.formMeta}>혼합 그룹 가능</Text>
+            </View>
+            <Text style={styles.formLabel}>총 인원수</Text>
+            <TextInput
+              keyboardType="number-pad"
+              onChangeText={setHeadcount}
+              placeholder="1"
+              placeholderTextColor={SUBTLE}
+              style={styles.input}
+              value={headcount}
+            />
+            <Text style={styles.formLabel}>참여자 이름</Text>
+            <TextInput
+              multiline
+              onChangeText={setParticipantNames}
+              placeholder="쉼표나 줄바꿈으로 이름을 입력"
+              placeholderTextColor={SUBTLE}
+              style={[styles.input, styles.textArea]}
+              value={participantNames}
+            />
+            <Text style={styles.formLabel}>관리 비밀번호 선택</Text>
+            <TextInput
+              onChangeText={setPassword}
+              placeholder="비워두면 코드만으로 관리"
+              placeholderTextColor={SUBTLE}
+              secureTextEntry
+              style={styles.input}
+              value={password}
+            />
+          </View>
+
+          <View style={styles.manageCalendarCard}>
+            <View style={styles.manageCalendarHeader}>
+              <View>
+                <Text style={styles.manageCalendarEyebrow}>CANDIDATES</Text>
+                <Text style={styles.manageCalendarTitle}>후보 시간 선택</Text>
+              </View>
+              <Text style={styles.manageCalendarCount}>
+                후보 {selectedSlots.length}개
+              </Text>
+            </View>
+
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.manageDateScroller}
+            >
+              <View style={styles.manageDateChipRow}>
+                {eventDetail.activeDates.map((dateKey) => {
+                  const parsedDate = parseDateValue(dateKey);
+                  const isSelected = dateKey === currentDate;
+                  const weekday = parsedDate.getDay();
+
+                  return (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: isSelected }}
+                      key={dateKey}
+                      onPress={() => setSelectedDate(dateKey)}
+                      style={({ pressed }) => [
+                        styles.manageDateChip,
+                        isSelected && styles.manageDateChipActive,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.manageDateChipDate,
+                          weekday === 0 && styles.sundayText,
+                          weekday === 6 && styles.saturdayText,
+                          isSelected && styles.manageDateChipDateActive,
+                        ]}
+                      >
+                        {formatShortDate(dateKey)}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.manageDateChipWeekday,
+                          weekday === 0 && styles.sundayText,
+                          weekday === 6 && styles.saturdayText,
+                          isSelected && styles.manageDateChipWeekdayActive,
+                        ]}
+                      >
+                        {formatWeekday(dateKey)}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </ScrollView>
+
+            <View style={styles.manageTimeline}>
+              <View style={styles.manageTimelineTimeColumn}>
+                {timelineRows.map((minute) => (
+                  <View
+                    key={minute}
+                    style={[
+                      styles.manageTimelineTimeSlot,
+                      { height: MANAGE_TIMELINE_HOUR_HEIGHT },
+                    ]}
+                  >
+                    <Text style={styles.manageTimelineTimeText}>
+                      {formatTimelineHour(minute)}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+              <View style={[styles.manageTimelineLane, { height: timelineHeight }]}>
+                {timelineRows.map((minute) => (
+                  <View
+                    key={minute}
+                    style={[
+                      styles.manageTimelineHourLine,
+                      { height: MANAGE_TIMELINE_HOUR_HEIGHT },
+                    ]}
+                  >
+                    <View style={styles.manageTimelineHalfLine} />
+                  </View>
+                ))}
+                {cells.map((cell) => {
+                  const isAvailable = isRangeInAvailableBlocks(
+                    eventDetail.timeBlocks,
+                    cell,
+                  );
+                  const isSelected = isRangeInCandidateSlots(selectedSlots, cell);
+                  const top =
+                    ((cell.startMinute - startMinute) / 60) *
+                    MANAGE_TIMELINE_HOUR_HEIGHT;
+                  const height =
+                    ((cell.endMinute - cell.startMinute) / 60) *
+                    MANAGE_TIMELINE_HOUR_HEIGHT;
+
+                  return (
+                    <Pressable
+                      accessibilityRole="button"
+                      key={cell.startAt}
+                      onPress={() =>
+                        setSelectedSlots((current) =>
+                          toggleCandidateSlots(current, cell),
+                        )
+                      }
+                      style={({ pressed }) => [
+                        styles.reserveCandidateCell,
+                        isAvailable && styles.reserveCandidateCellAvailable,
+                        isSelected && styles.reserveCandidateCellSelected,
+                        { height, top },
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      {isSelected ? (
+                        <Text style={styles.reserveCandidateCellText}>후보</Text>
+                      ) : null}
+                    </Pressable>
+                  );
+                })}
+                {visibleBufferRanges.map(({ overlap, range }, index) => (
+                  <View
+                    key={`${range.startAt}-${index}`}
+                    pointerEvents="none"
+                    style={[
+                      styles.reserveBlockedOverlay,
+                      getTimelineOverlayStyle(overlap, startMinute),
+                    ]}
+                  >
+                    <Text style={styles.reserveBlockedOverlayText}>버퍼</Text>
+                  </View>
+                ))}
+                {visibleConfirmedSlots.map(({ overlap, slot }) => (
+                  <View
+                    key={slot.id}
+                    pointerEvents="none"
+                    style={[
+                      styles.reserveConfirmedOverlay,
+                      getTimelineOverlayStyle(overlap, startMinute),
+                    ]}
+                  >
+                    <Text style={styles.reserveConfirmedOverlayText}>확정</Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          </View>
+
+          {selectedSlots.length > 0 ? (
+            <View style={styles.formCard}>
+              <View style={styles.formHeaderRow}>
+                <Text style={styles.formTitle}>후보 목록</Text>
+                <Text style={styles.formMeta}>선택 순서 우선</Text>
+              </View>
+              {selectedSlots.map((slot, index) => (
+                <View key={slot.startAt} style={styles.candidateRow}>
+                  <StatusPill approved={false} label={`후보 ${index + 1}`} />
+                  <Text style={styles.candidateTime}>
+                    {formatRange(slot.startAt, slot.endAt)}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
+
+          <PrimaryAction
+            disabled={isLoading || isEventLoading}
+            label="예약 신청"
+            loading={isLoading}
+            onPress={handleSubmit}
+          />
+        </>
+      ) : null}
     </ScrollView>
   );
 }
@@ -2681,6 +3278,10 @@ function getTitle(route: RouteKey, activeTab: TabKey) {
 
   if (route === "eventManage") {
     return "이벤트 관리";
+  }
+
+  if (route === "eventReserve") {
+    return "예약 신청";
   }
 
   return tabs.find((tab) => tab.key === activeTab)?.title ?? "";
@@ -2898,11 +3499,8 @@ function buildAvailabilityCells(
   dailyStartTime: string,
   dailyEndTime: string,
 ) {
-  const startClock = parseClockMinutes(dailyStartTime);
-  const startMinute = Number.isNaN(startClock) ? 540 : Math.max(0, startClock);
-  const endClock = parseClockMinutes(dailyEndTime);
-  const endMinute =
-    Number.isNaN(endClock) || endClock <= startMinute ? 1440 : endClock;
+  const startMinute = getDailyStartMinute(dailyStartTime);
+  const endMinute = getDailyEndMinute(dailyStartTime, dailyEndTime);
   const cells: Array<{
     endAt: string;
     endMinute: number;
@@ -2924,6 +3522,19 @@ function buildAvailabilityCells(
   return cells;
 }
 
+function getDailyStartMinute(dailyStartTime: string) {
+  const startClock = parseClockMinutes(dailyStartTime);
+
+  return Number.isNaN(startClock) ? 540 : Math.max(0, startClock);
+}
+
+function getDailyEndMinute(dailyStartTime: string, dailyEndTime: string) {
+  const startMinute = getDailyStartMinute(dailyStartTime);
+  const endClock = parseClockMinutes(dailyEndTime);
+
+  return Number.isNaN(endClock) || endClock <= startMinute ? 1440 : endClock;
+}
+
 function isRangeInAvailableBlocks(
   blocks: MobileTimeBlock[],
   range: { endAt: string; startAt: string },
@@ -2941,6 +3552,31 @@ function isRangeInAvailableBlocks(
 
     return blockStart <= start && end <= blockEnd;
   });
+}
+
+function isRangeInCandidateSlots(
+  slots: Array<{ endAt: string; startAt: string }>,
+  range: { endAt: string; startAt: string },
+) {
+  const start = parseDateValue(range.startAt).getTime();
+  const end = parseDateValue(range.endAt).getTime();
+
+  return slots.some(
+    (slot) =>
+      parseDateValue(slot.startAt).getTime() <= start &&
+      end <= parseDateValue(slot.endAt).getTime(),
+  );
+}
+
+function toggleCandidateSlots(
+  slots: Array<{ endAt: string; startAt: string }>,
+  range: { endAt: string; startAt: string },
+) {
+  if (isRangeInCandidateSlots(slots, range)) {
+    return slots.flatMap((slot) => subtractMobileTimeRange(slot, range));
+  }
+
+  return mergeMobileRanges([...slots, range]);
 }
 
 function toggleMobileAvailabilityBlocks(
@@ -2973,6 +3609,35 @@ function toggleMobileAvailabilityBlocks(
       ];
 
   return mergeMobileTimeBlockDrafts([...otherBlocks, ...nextAvailableBlocks]);
+}
+
+function mergeMobileRanges(ranges: Array<{ endAt: string; startAt: string }>) {
+  return ranges
+    .filter(isMobileTimeRangeValid)
+    .sort(
+      (left, right) =>
+        parseDateValue(left.startAt).getTime() -
+        parseDateValue(right.startAt).getTime(),
+    )
+    .reduce<Array<{ endAt: string; startAt: string }>>((merged, range) => {
+      const previous = merged.at(-1);
+
+      if (
+        previous &&
+        parseDateValue(range.startAt).getTime() <=
+          parseDateValue(previous.endAt).getTime()
+      ) {
+        previous.endAt = new Date(
+          Math.max(
+            parseDateValue(previous.endAt).getTime(),
+            parseDateValue(range.endAt).getTime(),
+          ),
+        ).toISOString();
+        return merged;
+      }
+
+      return [...merged, { ...range }];
+    }, []);
 }
 
 function subtractMobileTimeRange(
@@ -3052,6 +3717,79 @@ function mobileRangesOverlap(
 
 function isMobileTimeRangeValid(range: { endAt: string; startAt: string }) {
   return parseDateValue(range.startAt).getTime() < parseDateValue(range.endAt).getTime();
+}
+
+function buildMobileBufferRanges(
+  detail: MobileEventDetail,
+  confirmedSlots: MobileDashboardSlot[],
+) {
+  if (!detail.event.is_buffer_active || detail.event.buffer_time_minutes <= 0) {
+    return [];
+  }
+
+  const bufferMs = detail.event.buffer_time_minutes * 60_000;
+  const overrideByKey = new Map(
+    detail.bufferOverrides.map((override) => [
+      `${override.reservation_slot_id}:${override.side}`,
+      override,
+    ]),
+  );
+
+  return confirmedSlots.flatMap((slot) => {
+    const start = parseDateValue(getSlotDisplayStart(slot)).getTime();
+    const end = parseDateValue(getSlotDisplayEnd(slot)).getTime();
+
+    return (["BEFORE", "AFTER"] as const).flatMap((side) => {
+      const defaultActive =
+        side === "BEFORE"
+          ? detail.event.is_buffer_before_active
+          : detail.event.is_buffer_after_active;
+      const override = overrideByKey.get(`${slot.id}:${side}`);
+      const isActive = override ? override.is_active : defaultActive;
+
+      if (!isActive) {
+        return [];
+      }
+
+      const defaultRange =
+        side === "BEFORE"
+          ? {
+              endAt: new Date(start).toISOString(),
+              startAt: new Date(start - bufferMs).toISOString(),
+            }
+          : {
+              endAt: new Date(end + bufferMs).toISOString(),
+              startAt: new Date(end).toISOString(),
+            };
+      const range = {
+        endAt: override?.custom_end_at ?? defaultRange.endAt,
+        startAt: override?.custom_start_at ?? defaultRange.startAt,
+      };
+
+      return isMobileTimeRangeValid(range) ? [range] : [];
+    });
+  });
+}
+
+function getTimelineOverlayStyle(
+  overlap: { end: number; start: number },
+  timelineStart: number,
+) {
+  return {
+    height: Math.max(
+      ((overlap.end - overlap.start) / 60) * MANAGE_TIMELINE_HOUR_HEIGHT - 6,
+      MANAGE_TIMELINE_BLOCK_MIN_HEIGHT,
+    ),
+    top:
+      ((overlap.start - timelineStart) / 60) * MANAGE_TIMELINE_HOUR_HEIGHT + 3,
+  };
+}
+
+function parseParticipantNames(value: string) {
+  return value
+    .split(/[,\n]/)
+    .map((name) => name.trim())
+    .filter(Boolean);
 }
 
 function buildManageTimelineBounds(
@@ -3495,6 +4233,22 @@ const styles = StyleSheet.create({
     color: SUBTLE,
     fontSize: 28,
     fontWeight: "300",
+  },
+  candidateRow: {
+    alignItems: "center",
+    backgroundColor: "#F9FAFB",
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 10,
+    padding: 12,
+  },
+  candidateTime: {
+    color: INK,
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "800",
   },
   codeInput: {
     backgroundColor: "#F9FAFB",
@@ -4144,6 +4898,18 @@ const styles = StyleSheet.create({
     gap: 10,
     padding: 14,
   },
+  previewAction: {
+    alignItems: "center",
+    backgroundColor: PRIMARY,
+    borderRadius: 8,
+    minHeight: 44,
+    justifyContent: "center",
+  },
+  previewActionText: {
+    color: BACKGROUND,
+    fontSize: 14,
+    fontWeight: "900",
+  },
   previewMeta: {
     color: PRIMARY,
     fontSize: 12,
@@ -4256,6 +5022,72 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   reservationCard: {
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 10,
+    padding: 16,
+  },
+  reserveBlockedOverlay: {
+    alignItems: "center",
+    backgroundColor: "rgba(107, 114, 128, 0.18)",
+    borderRadius: 8,
+    justifyContent: "center",
+    left: 8,
+    position: "absolute",
+    right: 8,
+  },
+  reserveBlockedOverlayText: {
+    color: MUTED,
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  reserveCandidateCell: {
+    backgroundColor: "rgba(17, 24, 39, 0.02)",
+    borderColor: "rgba(229, 231, 235, 0.9)",
+    borderRadius: 5,
+    borderWidth: 1,
+    justifyContent: "center",
+    left: 6,
+    paddingHorizontal: 8,
+    position: "absolute",
+    right: 6,
+  },
+  reserveCandidateCellAvailable: {
+    backgroundColor: "rgba(0, 38, 75, 0.07)",
+    borderColor: "rgba(0, 38, 75, 0.16)",
+  },
+  reserveCandidateCellSelected: {
+    backgroundColor: PRIMARY,
+    borderColor: PRIMARY,
+  },
+  reserveCandidateCellText: {
+    color: BACKGROUND,
+    fontSize: 10,
+    fontWeight: "900",
+  },
+  reserveConfirmedOverlay: {
+    alignItems: "center",
+    backgroundColor: "rgba(0, 38, 75, 0.82)",
+    borderRadius: 8,
+    justifyContent: "center",
+    left: 8,
+    position: "absolute",
+    right: 8,
+  },
+  reserveConfirmedOverlayText: {
+    color: BACKGROUND,
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  reserveDescription: {
+    color: MUTED,
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 19,
+  },
+  reserveHero: {
     backgroundColor: BACKGROUND,
     borderColor: BORDER,
     borderRadius: 8,
@@ -4395,6 +5227,29 @@ const styles = StyleSheet.create({
   },
   statValue: {
     fontSize: 22,
+    fontWeight: "900",
+  },
+  successCard: {
+    backgroundColor: "#EAF7EF",
+    borderColor: "#BFE6CE",
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 6,
+    padding: 16,
+  },
+  successMeta: {
+    color: APPROVED,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  successText: {
+    color: INK,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  successTitle: {
+    color: APPROVED,
+    fontSize: 16,
     fontWeight: "900",
   },
   statusPill: {

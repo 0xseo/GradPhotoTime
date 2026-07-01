@@ -1,24 +1,20 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# GradPhotoTime
+
+Graduation photo scheduling app for Hosts and Guests. The web app is built with Next.js App Router and Supabase, and the mobile app is an Expo native React Native client that talks to dedicated Next.js mobile API routes.
 
 ## Getting Started
 
-First, run the development server:
+Run the web app:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
 ## Mobile App
 
-The Expo mobile client lives in `mobile/`. It uses native React Native screens with bottom tabs and a floating `+` action button.
+The Expo mobile client lives in `mobile/`. It uses native React Native screens with bottom tabs, SecureStore session persistence, pull-to-refresh dashboard data, and a floating `+` action button.
 
 ```bash
 cd mobile
@@ -26,23 +22,31 @@ npm install
 npm run android:local
 ```
 
-The current mobile client is native UI first. Data is still demo-backed until the mobile API layer is connected.
+By default the mobile app calls `https://grad-photo-time.vercel.app`. Override it with `EXPO_PUBLIC_API_BASE_URL` when testing a local API.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Current native mobile coverage includes email/password auth, dashboard/calendar data, event creation, code lookup, Host event management, Host availability editing, Host approve/unconfirm actions, and Guest event reservation creation.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Verification
 
-## Learn More
+Useful checks before pushing:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run typecheck
+npm run lint
+npm test
+npm run build
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+cd mobile
+npx tsc --noEmit
+npx expo export --platform android --output-dir /private/tmp/gradphoto-mobile-export
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Notes
 
-## Deploy on Vercel
+- `.env.local` is required for Supabase web/API secrets and is intentionally gitignored.
+- Mobile QR/deep-link behavior is not configured yet; add iOS Universal Links and Android App Links after app IDs/domains are final.
+- Phone/SMS auth remains deferred until a paid SMS provider and rate-limit policy are chosen.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Deploy
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Deploy the Next.js app on Vercel and configure Supabase auth redirect URLs for the production domain.
