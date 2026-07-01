@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -38,6 +38,15 @@ type ScheduleItem = {
   group: string;
   startAt?: string;
   status: string;
+  target?:
+    | {
+        eventId: string;
+        kind: "host";
+      }
+    | {
+        accessCode: string;
+        kind: "reservation";
+      };
   time: string;
   title: string;
 };
@@ -320,6 +329,7 @@ const API_BASE_URL =
 const SESSION_STORAGE_KEY = "grad-photo-time.mobile-session";
 const MANAGE_TIMELINE_HOUR_HEIGHT = 58;
 const MANAGE_TIMELINE_BLOCK_MIN_HEIGHT = 34;
+const CANDIDATE_REORDER_ROW_HEIGHT = 60;
 const serifFont = Platform.select({
   android: "serif",
   ios: "Georgia",
@@ -1540,6 +1550,8 @@ function renderRoute(route: RouteKey, context: RenderContext) {
     <CalendarScreen
       dashboard={context.dashboard}
       isLoading={context.isApiLoading}
+      onOpenHostEvent={context.onOpenHostEvent}
+      onOpenReservation={context.onOpenReservationManagement}
       onRefresh={context.onRefreshDashboard}
       session={context.session}
     />
@@ -1549,15 +1561,29 @@ function renderRoute(route: RouteKey, context: RenderContext) {
 function CalendarScreen({
   dashboard,
   isLoading,
+  onOpenHostEvent,
+  onOpenReservation,
   onRefresh,
   session,
 }: {
   dashboard: MobileDashboardData | null;
   isLoading: boolean;
+  onOpenHostEvent: (eventId: string) => void;
+  onOpenReservation: (accessCode: string) => void;
   onRefresh: () => Promise<void>;
   session: MobileSession | null;
 }) {
   const items = useMemo(() => buildSchedulesFromDashboard(dashboard), [dashboard]);
+  function handleOpenSchedule(item: ScheduleItem) {
+    if (item.target?.kind === "host") {
+      onOpenHostEvent(item.target.eventId);
+      return;
+    }
+
+    if (item.target?.kind === "reservation") {
+      onOpenReservation(item.target.accessCode);
+    }
+  }
 
   return (
     <ScrollView
@@ -1569,7 +1595,7 @@ function CalendarScreen({
       }
       showsVerticalScrollIndicator={false}
     >
-      <MonthCard dashboard={dashboard} />
+      <MonthCard dashboard={dashboard} onOpenSchedule={handleOpenSchedule} />
       <SectionHeader title="다가오는 일정" />
       {isLoading ? <LoadingCard label="일정을 불러오는 중" /> : null}
       {!session ? (
@@ -1585,7 +1611,11 @@ function CalendarScreen({
         />
       ) : null}
       {(session ? items : schedules).map((item) => (
-        <ScheduleCard key={`${item.date}-${item.title}`} item={item} />
+        <ScheduleCard
+          item={item}
+          key={`${item.date}-${item.title}-${item.time}`}
+          onOpen={handleOpenSchedule}
+        />
       ))}
     </ScrollView>
   );
@@ -1593,8 +1623,10 @@ function CalendarScreen({
 
 function MonthCard({
   dashboard,
+  onOpenSchedule,
 }: {
   dashboard: MobileDashboardData | null;
+  onOpenSchedule: (item: ScheduleItem) => void;
 }) {
   const today = useMemo(() => new Date(), []);
   const [visibleMonth, setVisibleMonth] = useState(
@@ -1767,9 +1799,17 @@ function MonthCard({
             </Text>
           </View>
           {selectedItems.map((item, index) => (
-              <View
+              <Pressable
+                accessibilityLabel={`${item.title} 열기`}
+                accessibilityRole="button"
+                disabled={!item.target}
                 key={`${item.title}-${item.time}-${index}`}
-                style={styles.dayPreviewItem}
+                onPress={() => onOpenSchedule(item)}
+                style={({ pressed }) => [
+                  styles.dayPreviewItem,
+                  item.target && styles.pressableCard,
+                  pressed && item.target && styles.pressed,
+                ]}
               >
                 <View style={styles.dayPreviewTop}>
                   <Text numberOfLines={1} style={styles.dayPreviewItemTitle}>
@@ -1782,7 +1822,7 @@ function MonthCard({
                 </View>
                 <Text style={styles.dayPreviewTime}>{item.time}</Text>
                 <Text style={styles.dayPreviewRole}>{item.group}</Text>
-              </View>
+              </Pressable>
             ))}
         </View>
       ) : null}
@@ -1802,13 +1842,25 @@ function MonthCard({
 
 function ScheduleCard({
   item,
+  onOpen,
 }: {
   item: ScheduleItem;
+  onOpen: (item: ScheduleItem) => void;
 }) {
   const approved = item.status === "확정";
 
   return (
-    <View style={styles.scheduleCard}>
+    <Pressable
+      accessibilityLabel={`${item.title} 열기`}
+      accessibilityRole="button"
+      disabled={!item.target}
+      onPress={() => onOpen(item)}
+      style={({ pressed }) => [
+        styles.scheduleCard,
+        item.target && styles.pressableCard,
+        pressed && item.target && styles.pressed,
+      ]}
+    >
       <View style={styles.scheduleTop}>
         <View>
           <Text style={styles.scheduleDate}>{item.date}</Text>
@@ -1818,7 +1870,7 @@ function ScheduleCard({
       </View>
       <Text style={styles.scheduleTime}>{item.time}</Text>
       <Text style={styles.scheduleGroup}>{item.group}</Text>
-    </View>
+    </Pressable>
   );
 }
 
@@ -3431,20 +3483,12 @@ function EventReserveScreen({
           </View>
 
           {selectedSlots.length > 0 ? (
-            <View style={styles.formCard}>
-              <View style={styles.formHeaderRow}>
-                <Text style={styles.formTitle}>후보 목록</Text>
-                <Text style={styles.formMeta}>선택 순서 우선</Text>
-              </View>
-              {selectedSlots.map((slot, index) => (
-                <View key={slot.startAt} style={styles.candidateRow}>
-                  <StatusPill approved={false} label={`후보 ${index + 1}`} />
-                  <Text style={styles.candidateTime}>
-                    {formatRange(slot.startAt, slot.endAt)}
-                  </Text>
-                </View>
-              ))}
-            </View>
+            <CandidateSlotList
+              meta="행을 드래그해서 순서 변경"
+              onReorder={setSelectedSlots}
+              slots={selectedSlots}
+              title="후보 목록"
+            />
           ) : null}
 
           <PrimaryAction
@@ -3920,20 +3964,12 @@ function ReservationManageScreen({
           </View>
 
           {selectedSlots.length > 0 ? (
-            <View style={styles.formCard}>
-              <View style={styles.formHeaderRow}>
-                <Text style={styles.formTitle}>대기 후보</Text>
-                <Text style={styles.formMeta}>선택 순서 우선</Text>
-              </View>
-              {selectedSlots.map((slot, index) => (
-                <View key={slot.startAt} style={styles.candidateRow}>
-                  <StatusPill approved={false} label={`후보 ${index + 1}`} />
-                  <Text style={styles.candidateTime}>
-                    {formatRange(slot.startAt, slot.endAt)}
-                  </Text>
-                </View>
-              ))}
-            </View>
+            <CandidateSlotList
+              meta="행을 드래그해서 순서 변경"
+              onReorder={setSelectedSlots}
+              slots={selectedSlots}
+              title="대기 후보"
+            />
           ) : null}
 
           <PrimaryAction
@@ -3962,6 +3998,138 @@ function ReservationManageScreen({
 
 function SectionHeader({ title }: { title: string }) {
   return <Text style={styles.sectionHeader}>{title}</Text>;
+}
+
+function CandidateSlotList({
+  meta,
+  onReorder,
+  slots,
+  title,
+}: {
+  meta: string;
+  onReorder: (slots: MobileTimeRange[]) => void;
+  slots: MobileTimeRange[];
+  title: string;
+}) {
+  const [dragState, setDragState] = useState<{
+    fromIndex: number;
+    toIndex: number;
+  } | null>(null);
+  const handlePreview = useCallback((fromIndex: number, toIndex: number) => {
+    setDragState({ fromIndex, toIndex });
+  }, []);
+  const handleEnd = useCallback(
+    (fromIndex: number, toIndex: number) => {
+      setDragState(null);
+
+      if (fromIndex !== toIndex) {
+        onReorder(reorderMobileRanges(slots, fromIndex, toIndex));
+      }
+    },
+    [onReorder, slots],
+  );
+  const handleCancel = useCallback(() => setDragState(null), []);
+
+  return (
+    <View style={styles.formCard}>
+      <View style={styles.formHeaderRow}>
+        <Text style={styles.formTitle}>{title}</Text>
+        <Text style={styles.formMeta}>{meta}</Text>
+      </View>
+      {slots.map((slot, index) => (
+        <CandidateSlotRow
+          count={slots.length}
+          index={index}
+          isDragging={dragState?.fromIndex === index}
+          key={`${slot.startAt}-${slot.endAt}`}
+          onCancel={handleCancel}
+          onEnd={handleEnd}
+          onPreview={handlePreview}
+          slot={slot}
+          targetIndex={
+            dragState?.fromIndex === index ? dragState.toIndex : null
+          }
+        />
+      ))}
+    </View>
+  );
+}
+
+function CandidateSlotRow({
+  count,
+  index,
+  isDragging,
+  onCancel,
+  onEnd,
+  onPreview,
+  slot,
+  targetIndex,
+}: {
+  count: number;
+  index: number;
+  isDragging: boolean;
+  onCancel: () => void;
+  onEnd: (fromIndex: number, toIndex: number) => void;
+  onPreview: (fromIndex: number, toIndex: number) => void;
+  slot: MobileTimeRange;
+  targetIndex: number | null;
+}) {
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gesture) =>
+          count > 1 && Math.abs(gesture.dy) > 5,
+        onStartShouldSetPanResponder: () => count > 1,
+        onPanResponderGrant: () => onPreview(index, index),
+        onPanResponderMove: (_, gesture) => {
+          const nextIndex = clamp(
+            index + Math.round(gesture.dy / CANDIDATE_REORDER_ROW_HEIGHT),
+            0,
+            count - 1,
+          );
+
+          onPreview(index, nextIndex);
+        },
+        onPanResponderRelease: (_, gesture) => {
+          const nextIndex = clamp(
+            index + Math.round(gesture.dy / CANDIDATE_REORDER_ROW_HEIGHT),
+            0,
+            count - 1,
+          );
+
+          onEnd(index, nextIndex);
+        },
+        onPanResponderTerminate: onCancel,
+      }),
+    [count, index, onCancel, onEnd, onPreview],
+  );
+
+  return (
+    <View
+      style={[
+        styles.candidateRow,
+        isDragging && styles.candidateRowDragging,
+      ]}
+    >
+      <StatusPill approved={false} label={`후보 ${index + 1}`} />
+      <Text style={styles.candidateTime}>{formatRange(slot.startAt, slot.endAt)}</Text>
+      <View style={styles.candidateReorderMeta}>
+        {targetIndex !== null && targetIndex !== index ? (
+          <Text style={styles.candidateReorderTarget}>
+            {targetIndex + 1}번으로
+          </Text>
+        ) : null}
+        <View
+          accessibilityLabel="후보 우선순위 드래그"
+          accessibilityRole="button"
+          style={styles.candidateReorderHandle}
+          {...panResponder.panHandlers}
+        >
+          <Text style={styles.candidateReorderGrip}>≡</Text>
+        </View>
+      </View>
+    </View>
+  );
 }
 
 function StatusPill({
@@ -4572,6 +4740,7 @@ function buildSchedulesFromDashboard(
         group: "호스트",
         slot,
         status: "확정",
+        target: { eventId: event.id, kind: "host" },
         title: event.title,
       }),
     ),
@@ -4580,6 +4749,7 @@ function buildSchedulesFromDashboard(
         group: "호스트",
         slot,
         status: "대기",
+        target: { eventId: event.id, kind: "host" },
         title: event.title,
       }),
     ),
@@ -4590,6 +4760,12 @@ function buildSchedulesFromDashboard(
         group: "참여",
         slot,
         status: slot.is_confirmed ? "확정" : statusLabel(reservation.status),
+        target: reservation.reservation_access_code
+          ? {
+              accessCode: reservation.reservation_access_code,
+              kind: "reservation",
+            }
+          : undefined,
         title: reservation.event?.title ?? "예약",
       }),
     ),
@@ -4606,11 +4782,13 @@ function buildScheduleItem({
   group,
   slot,
   status,
+  target,
   title,
 }: {
   group: string;
   slot: MobileDashboardSlot;
   status: string;
+  target?: ScheduleItem["target"];
   title: string;
 }): ScheduleItem {
   const startAt = slot.is_confirmed
@@ -4625,6 +4803,7 @@ function buildScheduleItem({
     group,
     startAt,
     status,
+    target,
     time: formatTimeRange(startAt, endAt),
     title,
   };
@@ -4828,7 +5007,27 @@ function setCandidateSlotRange(
     return slots.flatMap((slot) => subtractMobileTimeRange(slot, range));
   }
 
-  return mergeMobileRanges([...slots, range]);
+  const relatedIndexes = slots
+    .map((slot, index) => ({
+      index,
+      isRelated: mobileRangesTouchOrOverlap(slot, range),
+    }))
+    .filter((item) => item.isRelated)
+    .map((item) => item.index);
+
+  if (relatedIndexes.length === 0) {
+    return [...slots, range];
+  }
+
+  const firstRelatedIndex = Math.min(...relatedIndexes);
+  const relatedIndexSet = new Set(relatedIndexes);
+  const relatedRanges = slots.filter((_, index) => relatedIndexSet.has(index));
+  const mergedRanges = mergeMobileRanges([...relatedRanges, range]);
+  const nextSlots = slots.filter((_, index) => !relatedIndexSet.has(index));
+
+  nextSlots.splice(firstRelatedIndex, 0, ...mergedRanges);
+
+  return nextSlots;
 }
 
 function createMobileTimeBlockDrafts(blocks: MobileTimeBlock[]) {
@@ -5051,6 +5250,35 @@ function mobileRangesOverlap(
     parseDateValue(right.startAt).getTime() <
       parseDateValue(left.endAt).getTime()
   );
+}
+
+function mobileRangesTouchOrOverlap(
+  left: { endAt: string; startAt: string },
+  right: { endAt: string; startAt: string },
+) {
+  return (
+    parseDateValue(left.startAt).getTime() <=
+      parseDateValue(right.endAt).getTime() &&
+    parseDateValue(right.startAt).getTime() <=
+      parseDateValue(left.endAt).getTime()
+  );
+}
+
+function reorderMobileRanges<T>(items: T[], fromIndex: number, toIndex: number) {
+  const nextItems = [...items];
+  const [item] = nextItems.splice(fromIndex, 1);
+
+  if (item === undefined) {
+    return items;
+  }
+
+  nextItems.splice(toIndex, 0, item);
+
+  return nextItems;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function isMobileTimeRangeValid(range: { endAt: string; startAt: string }) {
@@ -5595,6 +5823,36 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 10,
     padding: 12,
+  },
+  candidateRowDragging: {
+    backgroundColor: PRIMARY_SOFT,
+    borderColor: PRIMARY,
+  },
+  candidateReorderGrip: {
+    color: PRIMARY,
+    fontSize: 20,
+    fontWeight: "900",
+    lineHeight: 22,
+  },
+  candidateReorderHandle: {
+    alignItems: "center",
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    height: 34,
+    justifyContent: "center",
+    width: 38,
+  },
+  candidateReorderMeta: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 6,
+  },
+  candidateReorderTarget: {
+    color: PRIMARY,
+    fontSize: 11,
+    fontWeight: "900",
   },
   candidateTime: {
     color: INK,
@@ -6412,6 +6670,9 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.72,
+  },
+  pressableCard: {
+    borderColor: "rgba(0, 38, 75, 0.22)",
   },
   primaryButton: {
     alignItems: "center",
