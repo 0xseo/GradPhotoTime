@@ -18,7 +18,7 @@
 - Step 5: Mobile-first Host and Guest UI implementation.
 - Event creation availability setup: Host selects date range, day bounds, and initial available time blocks in the drag grid.
 - Web/Server: Host event deletion is implemented with cascading cleanup of reservations, slots, participants, time blocks, active dates, and buffer overrides.
-- Mobile native app: auth/session persistence, dashboard data, calendar-to-detail navigation, event creation with synced calendar/date inputs, tap/drag active-date toggles, 0시/자정 default-time presets, immediate code routing with existing-reservation detection, Host event management with in-app date/default-time editing, event deletion, draft-save Host availability editing, Host review actions, tap/drag Guest event reservation creation with priority reordering, reservation-code management with unsaved-change warnings, and month/date navigation are implemented.
+- Mobile native app: auth/session persistence, dashboard data, source-aware calendar-to-detail navigation, upcoming/past schedule toggles, event creation with synced calendar/date inputs, tap/drag active-date activation/deactivation, 0시/자정 default-time presets, immediate code routing with existing-reservation detection, Host event management with in-app date/default-time editing, event deletion, draft-save Host availability editing, Host review actions, tap/drag Guest event reservation creation with priority reordering, reservation-code management with unsaved-change warnings, and month/date navigation are implemented.
 
 ## Next
 

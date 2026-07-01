@@ -735,6 +735,7 @@ function NativeShell() {
   const [session, setSession] = useState<MobileSession | null>(null);
   const [isQuickOpen, setIsQuickOpen] = useState(false);
   const [pendingLeaveTab, setPendingLeaveTab] = useState<TabKey | null>(null);
+  const [routeReturnTab, setRouteReturnTab] = useState<TabKey | null>(null);
   const quickActions = useMemo(() => getQuickActions(activeTab), [activeTab]);
 
   const title = getTitle(route, activeTab);
@@ -800,6 +801,7 @@ function NativeShell() {
     setHasUnsavedChanges(false);
     setIsLeaveConfirmVisible(false);
     setPendingLeaveTab(null);
+    setRouteReturnTab(null);
   }
 
   function openRoute(nextRoute: RouteKey) {
@@ -808,10 +810,14 @@ function NativeShell() {
     setHasUnsavedChanges(false);
     setIsLeaveConfirmVisible(false);
     setPendingLeaveTab(null);
+    setRouteReturnTab(null);
   }
 
   function openHostEvent(eventId: string) {
+    const nextReturnTab = activeTab;
+
     setActiveTab("events");
+    setRouteReturnTab(nextReturnTab);
     setSelectedHostEventId(eventId);
     setSelectedEventCode(null);
     setSelectedReservationCode(null);
@@ -823,7 +829,10 @@ function NativeShell() {
   }
 
   function openEventReservation(eventCode: string) {
+    const nextReturnTab = activeTab;
+
     setActiveTab("joined");
+    setRouteReturnTab(nextReturnTab);
     setSelectedEventCode(eventCode);
     setSelectedHostEventId(null);
     setSelectedReservationCode(null);
@@ -835,7 +844,10 @@ function NativeShell() {
   }
 
   function openReservationManagement(accessCode: string) {
+    const nextReturnTab = activeTab;
+
     setActiveTab("joined");
+    setRouteReturnTab(nextReturnTab);
     setSelectedReservationCode(accessCode);
     setSelectedEventCode(null);
     setSelectedHostEventId(null);
@@ -863,8 +875,8 @@ function NativeShell() {
       return;
     }
 
-    openTab(activeTab);
-  }, [activeTab, hasUnsavedChanges]);
+    openTab(routeReturnTab ?? activeTab);
+  }, [activeTab, hasUnsavedChanges, routeReturnTab]);
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener(
@@ -883,7 +895,7 @@ function NativeShell() {
   }, [activeTab, handleBackPress, route]);
 
   function handleConfirmLeave() {
-    openTab(pendingLeaveTab ?? activeTab);
+    openTab(pendingLeaveTab ?? routeReturnTab ?? activeTab);
   }
 
   function handleQuickPress() {
@@ -1742,7 +1754,31 @@ function CalendarScreen({
   onRefresh: () => Promise<void>;
   session: MobileSession | null;
 }) {
-  const items = useMemo(() => buildSchedulesFromDashboard(dashboard), [dashboard]);
+  const items = useMemo(
+    () =>
+      buildSchedulesFromDashboard(dashboard, {
+        includeHostPending: false,
+      }),
+    [dashboard],
+  );
+  const [isUpcomingOpen, setIsUpcomingOpen] = useState(true);
+  const [isPastOpen, setIsPastOpen] = useState(false);
+  const todayStartTime = useMemo(() => getStartOfDayTime(new Date()), []);
+  const upcomingItems = useMemo(
+    () =>
+      [...items]
+        .filter((item) => getScheduleSortTime(item) >= todayStartTime)
+        .sort((left, right) => getScheduleSortTime(left) - getScheduleSortTime(right)),
+    [items, todayStartTime],
+  );
+  const pastItems = useMemo(
+    () =>
+      [...items]
+        .filter((item) => getScheduleSortTime(item) < todayStartTime)
+        .sort((left, right) => getScheduleSortTime(right) - getScheduleSortTime(left)),
+    [items, todayStartTime],
+  );
+  const demoItems = session ? [] : schedules;
   function handleOpenSchedule(item: ScheduleItem) {
     if (item.target?.kind === "host") {
       onOpenHostEvent(item.target.eventId);
@@ -1765,27 +1801,63 @@ function CalendarScreen({
       showsVerticalScrollIndicator={false}
     >
       <MonthCard dashboard={dashboard} onOpenSchedule={handleOpenSchedule} />
-      <SectionHeader title="다가오는 일정" />
+      <ScheduleSectionToggle
+        count={session ? upcomingItems.length : demoItems.length}
+        isOpen={isUpcomingOpen}
+        onPress={() => setIsUpcomingOpen((current) => !current)}
+        title="다가오는 일정"
+      />
       {isLoading ? <LoadingCard label="일정을 불러오는 중" /> : null}
       {!session ? (
         <EmptyCard
-          detail="My 탭에서 이메일로 로그인하면 내 확정 일정과 대기 후보가 여기에 표시됩니다."
+          detail="My 탭에서 이메일로 로그인하면 내 확정 일정과 참여한 예약이 여기에 표시됩니다."
           title="로그인이 필요해요"
         />
       ) : null}
       {session && items.length === 0 && !isLoading ? (
         <EmptyCard
-          detail="호스트 확정 일정, 참여한 예약, 대기 후보가 생기면 달력에 바로 표시됩니다."
+          detail="호스트 확정 일정이나 참여한 예약이 생기면 여기에 표시됩니다. 호스트 대기 후보는 월간 달력 점으로만 확인할 수 있어요."
           title="아직 표시할 일정이 없어요"
         />
       ) : null}
-      {(session ? items : schedules).map((item) => (
-        <ScheduleCard
-          item={item}
-          key={`${item.date}-${item.title}-${item.time}`}
-          onOpen={handleOpenSchedule}
+      {isUpcomingOpen
+        ? (session ? upcomingItems : demoItems).map((item) => (
+            <ScheduleCard
+              item={item}
+              key={`upcoming-${item.date}-${item.title}-${item.time}`}
+              onOpen={handleOpenSchedule}
+            />
+          ))
+        : null}
+      {session && upcomingItems.length === 0 && isUpcomingOpen && !isLoading ? (
+        <EmptyCard
+          detail="오늘 이후 가까운 확정 일정이나 참여 예약이 없어요."
+          title="다가오는 일정이 없어요"
         />
-      ))}
+      ) : null}
+      {session ? (
+        <ScheduleSectionToggle
+          count={pastItems.length}
+          isOpen={isPastOpen}
+          onPress={() => setIsPastOpen((current) => !current)}
+          title="지나간 일정 보기"
+        />
+      ) : null}
+      {isPastOpen
+        ? pastItems.map((item) => (
+            <ScheduleCard
+              item={item}
+              key={`past-${item.date}-${item.title}-${item.time}`}
+              onOpen={handleOpenSchedule}
+            />
+          ))
+        : null}
+      {session && pastItems.length === 0 && isPastOpen && !isLoading ? (
+        <EmptyCard
+          detail="오늘 이전 일정이 아직 없어요."
+          title="지나간 일정이 없어요"
+        />
+      ) : null}
     </ScrollView>
   );
 }
@@ -2032,7 +2104,7 @@ function ScheduleCard({
     >
       <View style={styles.scheduleTop}>
         <View>
-          <Text style={styles.scheduleDate}>{item.date}</Text>
+          <Text style={styles.scheduleDate}>{getScheduleDateLabel(item)}</Text>
           <Text style={styles.scheduleTitle}>{item.title}</Text>
         </View>
         <StatusPill approved={approved} label={item.status} />
@@ -2391,11 +2463,7 @@ function EventDateTimeEditModal({
 
   async function handleSave() {
     setLocalError(null);
-    const normalizedActiveDates = normalizeActiveDateList(
-      activeDates,
-      dateStart,
-      dateEnd,
-    );
+    const normalizedActiveDates = normalizeActiveDateSelection(activeDates);
 
     if (!isDateInputValue(dateStart) || !isDateInputValue(dateEnd)) {
       setLocalError("날짜는 YYYY-MM-DD 형식으로 입력해 주세요.");
@@ -2404,6 +2472,11 @@ function EventDateTimeEditModal({
 
     if (dateStart > dateEnd) {
       setLocalError("시작일은 종료일보다 늦을 수 없습니다.");
+      return;
+    }
+
+    if (normalizedActiveDates.length === 0) {
+      setLocalError("활성 날짜를 하나 이상 선택해 주세요.");
       return;
     }
 
@@ -3421,11 +3494,7 @@ function CreateEventScreen({
 
   async function handleSubmit() {
     setLocalError(null);
-    const normalizedActiveDates = normalizeActiveDateList(
-      activeDates,
-      dateStart,
-      dateEnd,
-    );
+    const normalizedActiveDates = normalizeActiveDateSelection(activeDates);
 
     if (!session) {
       setLocalError("로그인이 필요합니다.");
@@ -3439,6 +3508,11 @@ function CreateEventScreen({
 
     if (dateStart > dateEnd) {
       setLocalError("시작일은 종료일보다 늦을 수 없습니다.");
+      return;
+    }
+
+    if (normalizedActiveDates.length === 0) {
+      setLocalError("활성 날짜를 하나 이상 선택해 주세요.");
       return;
     }
 
@@ -3700,8 +3774,8 @@ function DateRangeCalendarPicker({
     [days, visibleMonth],
   );
   const normalizedActiveDates = useMemo(
-    () => normalizeActiveDateList(activeDates, dateStart, dateEnd),
-    [activeDates, dateEnd, dateStart],
+    () => normalizeActiveDateSelection(activeDates),
+    [activeDates],
   );
   const activeDateSet = useMemo(
     () => new Set(normalizedActiveDates),
@@ -3781,35 +3855,38 @@ function DateRangeCalendarPicker({
             return;
           }
 
-          setDragState((current) =>
-            current ? { ...current, currentDate: nextDate } : current,
-          );
-        },
-        onPanResponderRelease: () => {
           setDragState((current) => {
-            if (current) {
-              const [selectionStart, selectionEnd] = sortDatePair(
-                current.startDate,
-                current.currentDate,
-              );
-
-              commitActiveDates(
-                applyActiveDateSelection(
-                  normalizedActiveDates,
-                  buildDateList(selectionStart, selectionEnd),
-                  current.shouldActivate,
-                ),
-              );
+            if (!current) {
+              return current;
             }
 
-            return null;
+            return { ...current, currentDate: nextDate };
           });
+        },
+        onPanResponderRelease: () => {
+          if (dragState) {
+            const [selectionStart, selectionEnd] = sortDatePair(
+              dragState.startDate,
+              dragState.currentDate,
+            );
+
+            commitActiveDates(
+              applyActiveDateSelection(
+                normalizedActiveDates,
+                buildDateList(selectionStart, selectionEnd),
+                dragState.shouldActivate,
+              ),
+            );
+          }
+
+          setDragState(null);
         },
         onPanResponderTerminate: () => setDragState(null),
       }),
     [
       activeDateSet,
       commitActiveDates,
+      dragState,
       getDateFromLocation,
       gridWidth,
       normalizedActiveDates,
@@ -4948,6 +5025,35 @@ function SectionHeader({ title }: { title: string }) {
   return <Text style={styles.sectionHeader}>{title}</Text>;
 }
 
+function ScheduleSectionToggle({
+  count,
+  isOpen,
+  onPress,
+  title,
+}: {
+  count: number;
+  isOpen: boolean;
+  onPress: () => void;
+  title: string;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.scheduleSectionToggle,
+        pressed && styles.pressed,
+      ]}
+    >
+      <View>
+        <Text style={styles.scheduleSectionTitle}>{title}</Text>
+        <Text style={styles.scheduleSectionMeta}>{count}개</Text>
+      </View>
+      <Text style={styles.scheduleSectionChevron}>{isOpen ? "⌃" : "⌄"}</Text>
+    </Pressable>
+  );
+}
+
 function CandidateSlotList({
   meta,
   onReorder,
@@ -5771,11 +5877,13 @@ function buildMonthDays(date: Date) {
 
 function buildSchedulesFromDashboard(
   dashboard: MobileDashboardData | null,
+  options: { includeHostPending?: boolean } = {},
 ): ScheduleItem[] {
   if (!dashboard) {
     return [];
   }
 
+  const includeHostPending = options.includeHostPending ?? true;
   const hostItems = dashboard.hostedEvents.flatMap((event) => [
     ...event.confirmedSlots.map((slot) =>
       buildScheduleItem({
@@ -5786,15 +5894,17 @@ function buildSchedulesFromDashboard(
         title: event.title,
       }),
     ),
-    ...event.pendingSlots.map((slot) =>
-      buildScheduleItem({
-        group: "호스트",
-        slot,
-        status: "대기",
-        target: { eventId: event.id, kind: "host" },
-        title: event.title,
-      }),
-    ),
+    ...(includeHostPending
+      ? event.pendingSlots.map((slot) =>
+          buildScheduleItem({
+            group: "호스트",
+            slot,
+            status: "대기",
+            target: { eventId: event.id, kind: "host" },
+            title: event.title,
+          }),
+        )
+      : []),
   ]);
   const guestItems = dashboard.reservations.flatMap((reservation) =>
     reservation.slots.map((slot) =>
@@ -6624,6 +6734,44 @@ function getScheduleSortTime(item: ScheduleItem) {
   return 0;
 }
 
+function getStartOfDayTime(date: Date) {
+  const start = new Date(date);
+
+  start.setHours(0, 0, 0, 0);
+
+  return start.getTime();
+}
+
+function getScheduleDateLabel(item: ScheduleItem) {
+  if (!item.startAt) {
+    return item.date;
+  }
+
+  const itemDate = parseDateValue(item.startAt);
+  const today = new Date();
+  const dayDiff = Math.round(
+    (getStartOfDayTime(itemDate) - getStartOfDayTime(today)) / 86_400_000,
+  );
+
+  if (dayDiff === 0) {
+    return "오늘";
+  }
+
+  if (dayDiff === 1) {
+    return "내일";
+  }
+
+  if (dayDiff === -1) {
+    return "어제";
+  }
+
+  if (dayDiff === -2) {
+    return "그제";
+  }
+
+  return item.date;
+}
+
 function formatDateKeyLabel(dateKey: string) {
   return formatDate(dateKey);
 }
@@ -6809,7 +6957,7 @@ function applyActiveDateSelection(
 
   const normalized = normalizeActiveDateSelection([...nextDates]);
 
-  return normalized.length > 0 ? normalized : normalizeActiveDateSelection(currentActiveDates);
+  return normalized;
 }
 
 function getActiveDateBounds(
@@ -8219,6 +8367,34 @@ const styles = StyleSheet.create({
     color: MUTED,
     fontSize: 13,
     fontWeight: "700",
+  },
+  scheduleSectionChevron: {
+    color: PRIMARY,
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  scheduleSectionMeta: {
+    color: SUBTLE,
+    fontSize: 12,
+    fontWeight: "800",
+    marginTop: 2,
+  },
+  scheduleSectionTitle: {
+    color: INK,
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  scheduleSectionToggle: {
+    alignItems: "center",
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    minHeight: 58,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
   scheduleTime: {
     color: INK,

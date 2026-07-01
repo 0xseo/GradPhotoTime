@@ -112,7 +112,7 @@ function normalizeActiveDates(
   dateStart: string,
   dateEnd: string,
 ) {
-  const source = value && value.length > 0 ? value : buildDateList(dateStart, dateEnd);
+  const source = value === undefined ? buildDateList(dateStart, dateEnd) : value;
   const activeDates = [...new Set(source.map((date) => requireDate(date, "activeDate")))]
     .filter((date) => date >= dateStart && date <= dateEnd)
     .sort();
