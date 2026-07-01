@@ -84,6 +84,11 @@ type UpdateEventDateRangePayload = {
   dateEnd: string;
   dateStart: string;
 };
+type ActiveDateSelection = {
+  activeDates: string[];
+  dateEnd: string;
+  dateStart: string;
+};
 type ReviewReservationPayload = {
   eventId: string;
   reservationId: string;
@@ -164,6 +169,7 @@ type MobileDashboardParticipant = {
   user_id: string | null;
 };
 type MobileHostedEvent = {
+  activeDates: string[];
   approvedCount: number;
   buffer_time_minutes: number;
   confirmedSlots: MobileDashboardSlot[];
@@ -2328,17 +2334,68 @@ function EventDateTimeEditModal({
   const [dailyStartTime, setDailyStartTime] = useState(
     () => trimClockValue(event.daily_start_time),
   );
-  const [dateEnd, setDateEnd] = useState(event.date_end);
-  const [dateStart, setDateStart] = useState(event.date_start);
+  const initialActiveDates = useMemo(
+    () => normalizeActiveDateList(event.activeDates, event.date_start, event.date_end),
+    [event.activeDates, event.date_end, event.date_start],
+  );
+  const [activeDates, setActiveDates] = useState(initialActiveDates);
+  const [dateEnd, setDateEnd] = useState(
+    () => getActiveDateBounds(initialActiveDates, event.date_start, event.date_end)[1],
+  );
+  const [dateStart, setDateStart] = useState(
+    () => getActiveDateBounds(initialActiveDates, event.date_start, event.date_end)[0],
+  );
   const [localError, setLocalError] = useState<string | null>(null);
 
-  function updateDateRange(nextStart: string, nextEnd: string) {
+  function updateDateSelection(nextSelection: ActiveDateSelection) {
+    setActiveDates(nextSelection.activeDates);
+    setDateStart(nextSelection.dateStart);
+    setDateEnd(nextSelection.dateEnd);
+  }
+
+  function updateDateStart(nextStart: string) {
     setDateStart(nextStart);
+
+    if (isDateInputValue(nextStart) && isDateInputValue(dateEnd)) {
+      const nextActiveDates = buildActiveDatesBetweenInputs(nextStart, dateEnd);
+
+      setActiveDates(nextActiveDates);
+      const [nextDateStart, nextDateEnd] = getActiveDateBounds(
+        nextActiveDates,
+        nextStart,
+        dateEnd,
+      );
+
+      setDateStart(nextDateStart);
+      setDateEnd(nextDateEnd);
+    }
+  }
+
+  function updateDateEnd(nextEnd: string) {
     setDateEnd(nextEnd);
+
+    if (isDateInputValue(dateStart) && isDateInputValue(nextEnd)) {
+      const nextActiveDates = buildActiveDatesBetweenInputs(dateStart, nextEnd);
+
+      setActiveDates(nextActiveDates);
+      const [nextDateStart, nextDateEnd] = getActiveDateBounds(
+        nextActiveDates,
+        dateStart,
+        nextEnd,
+      );
+
+      setDateStart(nextDateStart);
+      setDateEnd(nextDateEnd);
+    }
   }
 
   async function handleSave() {
     setLocalError(null);
+    const normalizedActiveDates = normalizeActiveDateList(
+      activeDates,
+      dateStart,
+      dateEnd,
+    );
 
     if (!isDateInputValue(dateStart) || !isDateInputValue(dateEnd)) {
       setLocalError("날짜는 YYYY-MM-DD 형식으로 입력해 주세요.");
@@ -2361,11 +2418,11 @@ function EventDateTimeEditModal({
     }
 
     await onSave({
-      activeDates: buildDateList(dateStart, dateEnd),
+      activeDates: normalizedActiveDates,
       dailyEndTime,
       dailyStartTime,
-      dateEnd,
-      dateStart,
+      dateEnd: normalizedActiveDates[normalizedActiveDates.length - 1] ?? dateEnd,
+      dateStart: normalizedActiveDates[0] ?? dateStart,
     });
   }
 
@@ -2414,7 +2471,7 @@ function EventDateTimeEditModal({
                 <Text style={styles.formLabel}>시작일</Text>
                 <TextInput
                   keyboardType="numbers-and-punctuation"
-                  onChangeText={setDateStart}
+                  onChangeText={updateDateStart}
                   placeholder="2026-06-26"
                   placeholderTextColor={SUBTLE}
                   style={styles.input}
@@ -2425,7 +2482,7 @@ function EventDateTimeEditModal({
                 <Text style={styles.formLabel}>종료일</Text>
                 <TextInput
                   keyboardType="numbers-and-punctuation"
-                  onChangeText={setDateEnd}
+                  onChangeText={updateDateEnd}
                   placeholder="2026-06-26"
                   placeholderTextColor={SUBTLE}
                   style={styles.input}
@@ -2434,30 +2491,61 @@ function EventDateTimeEditModal({
               </View>
             </View>
             <DateRangeCalendarPicker
+              activeDates={activeDates}
               dateEnd={dateEnd}
               dateStart={dateStart}
-              onChange={updateDateRange}
+              onChange={updateDateSelection}
             />
             <View style={styles.formTwoColumn}>
               <View style={styles.formColumn}>
-                <Text style={styles.formLabel}>시작 시간</Text>
+                <View style={styles.timeLabelRow}>
+                  <Text style={styles.formLabel}>시작 시간</Text>
+                  <TimePresetToggle
+                    active={dailyStartTime === "00:00"}
+                    label="0시"
+                    onPress={() =>
+                      setDailyStartTime((value) =>
+                        trimClockValue(value) === "00:00" ? "09:00" : "00:00",
+                      )
+                    }
+                  />
+                </View>
                 <TextInput
+                  editable={dailyStartTime !== "00:00"}
                   keyboardType="numbers-and-punctuation"
                   onChangeText={setDailyStartTime}
                   placeholder="09:00"
                   placeholderTextColor={SUBTLE}
-                  style={styles.input}
+                  style={[
+                    styles.input,
+                    dailyStartTime === "00:00" && styles.inputDisabled,
+                  ]}
                   value={dailyStartTime}
                 />
               </View>
               <View style={styles.formColumn}>
-                <Text style={styles.formLabel}>종료 시간</Text>
+                <View style={styles.timeLabelRow}>
+                  <Text style={styles.formLabel}>종료 시간</Text>
+                  <TimePresetToggle
+                    active={dailyEndTime === "24:00"}
+                    label="자정"
+                    onPress={() =>
+                      setDailyEndTime((value) =>
+                        trimClockValue(value) === "24:00" ? "18:00" : "24:00",
+                      )
+                    }
+                  />
+                </View>
                 <TextInput
+                  editable={dailyEndTime !== "24:00"}
                   keyboardType="numbers-and-punctuation"
                   onChangeText={setDailyEndTime}
                   placeholder="18:00"
                   placeholderTextColor={SUBTLE}
-                  style={styles.input}
+                  style={[
+                    styles.input,
+                    dailyEndTime === "24:00" && styles.inputDisabled,
+                  ]}
                   value={dailyEndTime}
                 />
               </View>
@@ -2527,8 +2615,8 @@ function HostEventCalendar({
     [event.timeBlocks],
   );
   const eventDates = useMemo(
-    () => buildDateList(event.date_start, event.date_end),
-    [event.date_end, event.date_start],
+    () => normalizeActiveDateList(event.activeDates, event.date_start, event.date_end),
+    [event.activeDates, event.date_end, event.date_start],
   );
   const todayKey = buildDateKey(new Date());
   const initialDate = eventDates.includes(todayKey)
@@ -3273,6 +3361,7 @@ function CreateEventScreen({
   const [bufferMinutes, setBufferMinutes] = useState("30");
   const [dailyEndTime, setDailyEndTime] = useState("18:00");
   const [dailyStartTime, setDailyStartTime] = useState("09:00");
+  const [activeDates, setActiveDates] = useState([today]);
   const [dateEnd, setDateEnd] = useState(today);
   const [dateStart, setDateStart] = useState(today);
   const [description, setDescription] = useState("");
@@ -3283,14 +3372,60 @@ function CreateEventScreen({
     onSetUnsavedChanges(true);
   }
 
-  function updateDateRange(nextStart: string, nextEnd: string) {
+  function updateDateSelection(nextSelection: ActiveDateSelection) {
+    setActiveDates(nextSelection.activeDates);
+    setDateStart(nextSelection.dateStart);
+    setDateEnd(nextSelection.dateEnd);
+    markDirty();
+  }
+
+  function updateDateStart(nextStart: string) {
     setDateStart(nextStart);
+
+    if (isDateInputValue(nextStart) && isDateInputValue(dateEnd)) {
+      const nextActiveDates = buildActiveDatesBetweenInputs(nextStart, dateEnd);
+
+      setActiveDates(nextActiveDates);
+      const [nextDateStart, nextDateEnd] = getActiveDateBounds(
+        nextActiveDates,
+        nextStart,
+        dateEnd,
+      );
+
+      setDateStart(nextDateStart);
+      setDateEnd(nextDateEnd);
+    }
+
+    markDirty();
+  }
+
+  function updateDateEnd(nextEnd: string) {
     setDateEnd(nextEnd);
+
+    if (isDateInputValue(dateStart) && isDateInputValue(nextEnd)) {
+      const nextActiveDates = buildActiveDatesBetweenInputs(dateStart, nextEnd);
+
+      setActiveDates(nextActiveDates);
+      const [nextDateStart, nextDateEnd] = getActiveDateBounds(
+        nextActiveDates,
+        dateStart,
+        nextEnd,
+      );
+
+      setDateStart(nextDateStart);
+      setDateEnd(nextDateEnd);
+    }
+
     markDirty();
   }
 
   async function handleSubmit() {
     setLocalError(null);
+    const normalizedActiveDates = normalizeActiveDateList(
+      activeDates,
+      dateStart,
+      dateEnd,
+    );
 
     if (!session) {
       setLocalError("로그인이 필요합니다.");
@@ -3318,12 +3453,12 @@ function CreateEventScreen({
     }
 
     await onCreateEvent({
-      activeDates: buildDateList(dateStart, dateEnd),
+      activeDates: normalizedActiveDates,
       bufferTimeMinutes: Number.parseInt(bufferMinutes, 10) || 0,
       dailyEndTime,
       dailyStartTime,
-      dateEnd,
-      dateStart,
+      dateEnd: normalizedActiveDates[normalizedActiveDates.length - 1] ?? dateEnd,
+      dateStart: normalizedActiveDates[0] ?? dateStart,
       description,
       isBufferAfterActive: bufferAfter,
       isBufferBeforeActive: bufferBefore,
@@ -3380,10 +3515,7 @@ function CreateEventScreen({
             <Text style={styles.formLabel}>시작일</Text>
             <TextInput
               keyboardType="numbers-and-punctuation"
-              onChangeText={(value) => {
-                setDateStart(value);
-                markDirty();
-              }}
+              onChangeText={updateDateStart}
               placeholder="2026-06-26"
               placeholderTextColor={SUBTLE}
               style={styles.input}
@@ -3394,10 +3526,7 @@ function CreateEventScreen({
             <Text style={styles.formLabel}>종료일</Text>
             <TextInput
               keyboardType="numbers-and-punctuation"
-              onChangeText={(value) => {
-                setDateEnd(value);
-                markDirty();
-              }}
+              onChangeText={updateDateEnd}
               placeholder="2026-06-26"
               placeholderTextColor={SUBTLE}
               style={styles.input}
@@ -3406,9 +3535,10 @@ function CreateEventScreen({
           </View>
         </View>
         <DateRangeCalendarPicker
+          activeDates={activeDates}
           dateEnd={dateEnd}
           dateStart={dateStart}
-          onChange={updateDateRange}
+          onChange={updateDateSelection}
         />
       </View>
 
@@ -3419,8 +3549,21 @@ function CreateEventScreen({
         </View>
         <View style={styles.formTwoColumn}>
           <View style={styles.formColumn}>
-            <Text style={styles.formLabel}>시작 시간</Text>
+            <View style={styles.timeLabelRow}>
+              <Text style={styles.formLabel}>시작 시간</Text>
+              <TimePresetToggle
+                active={dailyStartTime === "00:00"}
+                label="0시"
+                onPress={() => {
+                  setDailyStartTime((value) =>
+                    trimClockValue(value) === "00:00" ? "09:00" : "00:00",
+                  );
+                  markDirty();
+                }}
+              />
+            </View>
             <TextInput
+              editable={dailyStartTime !== "00:00"}
               keyboardType="numbers-and-punctuation"
               onChangeText={(value) => {
                 setDailyStartTime(value);
@@ -3428,13 +3571,29 @@ function CreateEventScreen({
               }}
               placeholder="09:00"
               placeholderTextColor={SUBTLE}
-              style={styles.input}
+              style={[
+                styles.input,
+                dailyStartTime === "00:00" && styles.inputDisabled,
+              ]}
               value={dailyStartTime}
             />
           </View>
           <View style={styles.formColumn}>
-            <Text style={styles.formLabel}>종료 시간</Text>
+            <View style={styles.timeLabelRow}>
+              <Text style={styles.formLabel}>종료 시간</Text>
+              <TimePresetToggle
+                active={dailyEndTime === "24:00"}
+                label="자정"
+                onPress={() => {
+                  setDailyEndTime((value) =>
+                    trimClockValue(value) === "24:00" ? "18:00" : "24:00",
+                  );
+                  markDirty();
+                }}
+              />
+            </View>
             <TextInput
+              editable={dailyEndTime !== "24:00"}
               keyboardType="numbers-and-punctuation"
               onChangeText={(value) => {
                 setDailyEndTime(value);
@@ -3442,7 +3601,10 @@ function CreateEventScreen({
               }}
               placeholder="18:00"
               placeholderTextColor={SUBTLE}
-              style={styles.input}
+              style={[
+                styles.input,
+                dailyEndTime === "24:00" && styles.inputDisabled,
+              ]}
               value={dailyEndTime}
             />
           </View>
@@ -3497,13 +3659,15 @@ function CreateEventScreen({
 }
 
 function DateRangeCalendarPicker({
+  activeDates,
   dateEnd,
   dateStart,
   onChange,
 }: {
+  activeDates: string[];
   dateEnd: string;
   dateStart: string;
-  onChange: (dateStart: string, dateEnd: string) => void;
+  onChange: (selection: ActiveDateSelection) => void;
 }) {
   const todayKey = buildDateKey(new Date());
   const initialMonth = isDateInputValue(dateStart)
@@ -3511,6 +3675,7 @@ function DateRangeCalendarPicker({
     : new Date();
   const [dragState, setDragState] = useState<{
     currentDate: string;
+    shouldActivate: boolean;
     startDate: string;
   } | null>(null);
   const [gridWidth, setGridWidth] = useState(0);
@@ -3534,9 +3699,26 @@ function DateRangeCalendarPicker({
       ),
     [days, visibleMonth],
   );
-  const displayedRange = dragState
-    ? sortDatePair(dragState.startDate, dragState.currentDate)
-    : sortDatePair(dateStart, dateEnd);
+  const normalizedActiveDates = useMemo(
+    () => normalizeActiveDateList(activeDates, dateStart, dateEnd),
+    [activeDates, dateEnd, dateStart],
+  );
+  const activeDateSet = useMemo(
+    () => new Set(normalizedActiveDates),
+    [normalizedActiveDates],
+  );
+  const previewDateSet = useMemo(() => {
+    if (!dragState) {
+      return null;
+    }
+
+    const [previewStart, previewEnd] = sortDatePair(
+      dragState.startDate,
+      dragState.currentDate,
+    );
+
+    return new Set(buildDateList(previewStart, previewEnd));
+  }, [dragState]);
   const cellHeight = 42;
 
   const getDateFromLocation = useCallback((locationX: number, locationY: number) => {
@@ -3546,17 +3728,27 @@ function DateRangeCalendarPicker({
 
     const columnWidth = gridWidth / 7;
     const column = clamp(Math.floor(locationX / columnWidth), 0, 6);
-    const row = clamp(Math.floor(locationY / cellHeight), 0, 5);
+    const maxRow = Math.max(Math.ceil(dateCells.length / 7) - 1, 0);
+    const row = clamp(Math.floor(locationY / cellHeight), 0, maxRow);
     const index = row * 7 + column;
 
     return dateCells[index] ?? null;
-  }, [dateCells, gridWidth]);
+  }, [dateCells, gridWidth, cellHeight]);
 
-  const commitRange = useCallback((startDate: string, endDate: string) => {
-    const [nextStart, nextEnd] = sortDatePair(startDate, endDate);
+  const commitActiveDates = useCallback((nextActiveDates: string[]) => {
+    const normalizedNextActiveDates = normalizeActiveDateSelection(nextActiveDates);
+    const [nextStart, nextEnd] = getActiveDateBounds(
+      normalizedNextActiveDates,
+      dateStart,
+      dateEnd,
+    );
 
-    onChange(nextStart, nextEnd);
-  }, [onChange]);
+    onChange({
+      activeDates: normalizedNextActiveDates,
+      dateEnd: nextEnd,
+      dateStart: nextStart,
+    });
+  }, [dateEnd, dateStart, onChange]);
 
   const panResponder = useMemo(
     () =>
@@ -3573,7 +3765,11 @@ function DateRangeCalendarPicker({
             return;
           }
 
-          setDragState({ currentDate: nextDate, startDate: nextDate });
+          setDragState({
+            currentDate: nextDate,
+            shouldActivate: !activeDateSet.has(nextDate),
+            startDate: nextDate,
+          });
         },
         onPanResponderMove: (event) => {
           const nextDate = getDateFromLocation(
@@ -3592,7 +3788,18 @@ function DateRangeCalendarPicker({
         onPanResponderRelease: () => {
           setDragState((current) => {
             if (current) {
-              commitRange(current.startDate, current.currentDate);
+              const [selectionStart, selectionEnd] = sortDatePair(
+                current.startDate,
+                current.currentDate,
+              );
+
+              commitActiveDates(
+                applyActiveDateSelection(
+                  normalizedActiveDates,
+                  buildDateList(selectionStart, selectionEnd),
+                  current.shouldActivate,
+                ),
+              );
             }
 
             return null;
@@ -3600,7 +3807,13 @@ function DateRangeCalendarPicker({
         },
         onPanResponderTerminate: () => setDragState(null),
       }),
-    [commitRange, getDateFromLocation, gridWidth],
+    [
+      activeDateSet,
+      commitActiveDates,
+      getDateFromLocation,
+      gridWidth,
+      normalizedActiveDates,
+    ],
   );
 
   return (
@@ -3637,7 +3850,11 @@ function DateRangeCalendarPicker({
               const today = new Date();
 
               setVisibleMonth(new Date(today.getFullYear(), today.getMonth(), 1));
-              onChange(todayKey, todayKey);
+              onChange({
+                activeDates: [todayKey],
+                dateEnd: todayKey,
+                dateStart: todayKey,
+              });
             }}
             style={({ pressed }) => [
               styles.monthTodayButton,
@@ -3685,13 +3902,17 @@ function DateRangeCalendarPicker({
       >
         {dateCells.map((dayKey, index) => {
           const weekday = index % 7;
-          const isInRange =
+          const isPreviewed =
+            dayKey !== null && previewDateSet?.has(dayKey) === true;
+          const isActive =
             dayKey !== null &&
-            displayedRange[0] <= dayKey &&
-            dayKey <= displayedRange[1];
-          const isEndpoint =
+            (isPreviewed
+              ? dragState?.shouldActivate === true
+              : activeDateSet.has(dayKey));
+          const isPreviewOff =
             dayKey !== null &&
-            (dayKey === displayedRange[0] || dayKey === displayedRange[1]);
+            isPreviewed &&
+            dragState?.shouldActivate === false;
           const isToday = dayKey === todayKey;
 
           return (
@@ -3700,8 +3921,11 @@ function DateRangeCalendarPicker({
               style={[
                 styles.dateRangeDay,
                 { height: cellHeight },
-                isInRange && styles.dateRangeDayActive,
-                isEndpoint && styles.dateRangeDayEndpoint,
+                isActive && styles.dateRangeDayEndpoint,
+                isPreviewed &&
+                  dragState?.shouldActivate === true &&
+                  styles.dateRangeDayActivePreview,
+                isPreviewOff && styles.dateRangeDayInactivePreview,
               ]}
             >
               {dayKey ? (
@@ -3710,7 +3934,8 @@ function DateRangeCalendarPicker({
                     styles.dateRangeDayText,
                     weekday === 0 && styles.sundayText,
                     weekday === 6 && styles.saturdayText,
-                    isEndpoint && styles.dateRangeDayTextActive,
+                    isActive && styles.dateRangeDayTextActive,
+                    isPreviewOff && styles.dateRangeDayTextInactivePreview,
                   ]}
                 >
                   {Number(dayKey.slice(-2))}
@@ -3722,7 +3947,7 @@ function DateRangeCalendarPicker({
         })}
       </View>
       <Text style={styles.dateRangeHint}>
-        날짜를 누르거나 드래그해서 기간을 선택할 수 있어요.
+        날짜를 눌러 켜고 끄거나 드래그해서 여러 날짜를 한 번에 바꿀 수 있어요.
       </Text>
       <MonthPickerModal
         key={buildMonthKey(visibleMonth)}
@@ -5453,6 +5678,36 @@ function ToggleRow({
   );
 }
 
+function TimePresetToggle({
+  active,
+  label,
+  onPress,
+}: {
+  active: boolean;
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked: active }}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.timePresetToggle,
+        active && styles.timePresetToggleActive,
+        pressed && styles.pressed,
+      ]}
+    >
+      <View style={[styles.timePresetCheck, active && styles.timePresetCheckActive]}>
+        {active ? <Text style={styles.timePresetCheckText}>✓</Text> : null}
+      </View>
+      <Text style={[styles.timePresetText, active && styles.timePresetTextActive]}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
 function getQuickActions(tab: TabKey): QuickAction[] {
   if (tab === "events") {
     return [{ label: "이벤트 만들기", route: "create", tone: PRIMARY_SOFT }];
@@ -6499,6 +6754,84 @@ function buildDateList(dateStart: string, dateEnd: string) {
   return dates;
 }
 
+function normalizeActiveDateSelection(activeDates: string[]) {
+  return [
+    ...new Set(activeDates.filter((date) => isDateInputValue(date))),
+  ].sort();
+}
+
+function normalizeActiveDateList(
+  activeDates: string[] | undefined,
+  fallbackStart: string,
+  fallbackEnd: string,
+) {
+  const normalized = normalizeActiveDateSelection(activeDates ?? []);
+
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  if (isDateInputValue(fallbackStart) && isDateInputValue(fallbackEnd)) {
+    return buildActiveDatesBetweenInputs(fallbackStart, fallbackEnd);
+  }
+
+  return [buildDateKey(new Date())];
+}
+
+function buildActiveDatesBetweenInputs(dateStart: string, dateEnd: string) {
+  if (!isDateInputValue(dateStart) || !isDateInputValue(dateEnd)) {
+    return [];
+  }
+
+  const [nextStart, nextEnd] = sortDatePair(dateStart, dateEnd);
+
+  return buildDateList(nextStart, nextEnd);
+}
+
+function applyActiveDateSelection(
+  currentActiveDates: string[],
+  targetDates: string[],
+  shouldActivate: boolean,
+) {
+  const nextDates = new Set(normalizeActiveDateSelection(currentActiveDates));
+
+  targetDates.forEach((date) => {
+    if (!isDateInputValue(date)) {
+      return;
+    }
+
+    if (shouldActivate) {
+      nextDates.add(date);
+    } else {
+      nextDates.delete(date);
+    }
+  });
+
+  const normalized = normalizeActiveDateSelection([...nextDates]);
+
+  return normalized.length > 0 ? normalized : normalizeActiveDateSelection(currentActiveDates);
+}
+
+function getActiveDateBounds(
+  activeDates: string[],
+  fallbackStart: string,
+  fallbackEnd: string,
+): [string, string] {
+  const normalized = normalizeActiveDateSelection(activeDates);
+
+  if (normalized.length > 0) {
+    return [normalized[0], normalized[normalized.length - 1]];
+  }
+
+  if (isDateInputValue(fallbackStart) && isDateInputValue(fallbackEnd)) {
+    return sortDatePair(fallbackStart, fallbackEnd);
+  }
+
+  const today = buildDateKey(new Date());
+
+  return [today, today];
+}
+
 function sortDatePair(left: string, right: string): [string, string] {
   if (!isDateInputValue(left) || !isDateInputValue(right)) {
     const fallback = buildDateKey(new Date());
@@ -6742,8 +7075,14 @@ const styles = StyleSheet.create({
   dateRangeDayActive: {
     backgroundColor: PRIMARY_SOFT,
   },
+  dateRangeDayActivePreview: {
+    backgroundColor: "rgba(0, 38, 75, 0.78)",
+  },
   dateRangeDayEndpoint: {
     backgroundColor: PRIMARY,
+  },
+  dateRangeDayInactivePreview: {
+    backgroundColor: "rgba(185, 80, 80, 0.13)",
   },
   dateRangeDayText: {
     color: INK,
@@ -6752,6 +7091,9 @@ const styles = StyleSheet.create({
   },
   dateRangeDayTextActive: {
     color: BACKGROUND,
+  },
+  dateRangeDayTextInactivePreview: {
+    color: "#B95050",
   },
   dateRangeGrid: {
     flexDirection: "row",
@@ -7029,6 +7371,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 10,
   },
+  timeLabelRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 7,
+  },
   header: {
     alignItems: "center",
     backgroundColor: BACKGROUND,
@@ -7099,6 +7446,10 @@ const styles = StyleSheet.create({
     minHeight: 50,
     paddingHorizontal: 13,
     paddingVertical: 12,
+  },
+  inputDisabled: {
+    backgroundColor: "#F3F4F6",
+    color: MUTED,
   },
   bufferSummary: {
     alignItems: "center",
@@ -8162,6 +8513,47 @@ const styles = StyleSheet.create({
   },
   toggleTrackActive: {
     backgroundColor: PRIMARY,
+  },
+  timePresetCheck: {
+    alignItems: "center",
+    borderColor: BORDER,
+    borderRadius: 4,
+    borderWidth: 1,
+    height: 16,
+    justifyContent: "center",
+    width: 16,
+  },
+  timePresetCheckActive: {
+    backgroundColor: PRIMARY,
+    borderColor: PRIMARY,
+  },
+  timePresetCheckText: {
+    color: BACKGROUND,
+    fontSize: 10,
+    fontWeight: "900",
+    lineHeight: 12,
+  },
+  timePresetText: {
+    color: MUTED,
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  timePresetTextActive: {
+    color: PRIMARY,
+  },
+  timePresetToggle: {
+    alignItems: "center",
+    borderColor: BORDER,
+    borderRadius: 999,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+  },
+  timePresetToggleActive: {
+    backgroundColor: PRIMARY_SOFT,
+    borderColor: "rgba(0, 38, 75, 0.22)",
   },
   weekLabel: {
     color: MUTED,

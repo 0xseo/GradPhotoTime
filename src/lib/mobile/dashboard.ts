@@ -51,7 +51,13 @@ export type MobileTimeBlock = Pick<
   "end_at" | "event_id" | "id" | "note" | "start_at" | "type"
 >;
 
+type MobileEventActiveDate = Pick<
+  Tables<"event_active_dates">,
+  "active_date" | "event_id"
+>;
+
 export type MobileHostedEvent = MobileDashboardEvent & {
+  activeDates: string[];
   approvedCount: number;
   confirmedSlots: MobileDashboardSlot[];
   participants: MobileDashboardParticipant[];
@@ -94,10 +100,11 @@ export async function getMobileDashboardForUser(
     admin,
     hostedReservations.map((reservation) => reservation.id),
   );
-  const hostedTimeBlocks = await listTimeBlocksForEventIds(
-    admin,
-    hostedEvents.map((event) => event.id),
-  );
+  const hostedEventIds = hostedEvents.map((event) => event.id);
+  const [hostedActiveDates, hostedTimeBlocks] = await Promise.all([
+    listActiveDatesForEventIds(admin, hostedEventIds),
+    listTimeBlocksForEventIds(admin, hostedEventIds),
+  ]);
   const guestEvents = await listEventsByIds(
     admin,
     guestReservations.map((reservation) => reservation.event_id),
@@ -118,6 +125,7 @@ export async function getMobileDashboardForUser(
         hostedReservations,
         hostedSlots,
         participants,
+        hostedActiveDates,
         hostedTimeBlocks,
       ),
     ),
@@ -144,6 +152,7 @@ function buildHostedEventSummary(
   reservations: MobileDashboardReservation[],
   slots: MobileDashboardSlot[],
   participants: MobileDashboardParticipant[],
+  activeDates: MobileEventActiveDate[],
   timeBlocks: MobileTimeBlock[],
 ): MobileHostedEvent {
   const eventReservations = reservations.filter(
@@ -158,6 +167,9 @@ function buildHostedEventSummary(
 
   return {
     ...event,
+    activeDates: activeDates
+      .filter((activeDate) => activeDate.event_id === event.id)
+      .map((activeDate) => activeDate.active_date),
     approvedCount: eventReservations.filter(
       (reservation) => reservation.status === "APPROVED",
     ).length,
@@ -173,6 +185,27 @@ function buildHostedEventSummary(
     ),
     timeBlocks: timeBlocks.filter((block) => block.event_id === event.id),
   };
+}
+
+async function listActiveDatesForEventIds(
+  admin: AdminClient,
+  eventIds: string[],
+) {
+  if (eventIds.length === 0) {
+    return [];
+  }
+
+  const { data, error } = await admin
+    .from("event_active_dates")
+    .select("event_id,active_date")
+    .in("event_id", eventIds)
+    .order("active_date", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data ?? [];
 }
 
 async function listTimeBlocksForEventIds(

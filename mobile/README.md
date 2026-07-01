@@ -35,11 +35,11 @@ EXPO_PUBLIC_API_BASE_URL=http://10.0.2.2:3000 npm run android:local
 - Email/password sign in and sign up through mobile API routes
 - SecureStore session persistence with refresh-token retry
 - Dashboard pull-to-refresh for hosted events, joined reservations, calendar markers, and calendar-to-detail navigation
-- Event creation with synced date inputs, drag/tap calendar range selection, daily time range, and buffer settings
+- Event creation with synced date inputs, tap/drag active-date toggles, 0시/자정 default-time presets, daily time range, and buffer settings
 - Code lookup for event codes and reservation management codes with immediate navigation to the matching screen; event codes open an existing owned/participating reservation when one is already pending or approved
-- Host event management with confirmed/pending lists, approve/unconfirm, event deletion, in-app date/default-time edits, date navigation, read-only schedule calendar, and draft-save drag availability editing
-- Guest event reservation creation with drag-based 30-minute candidate selection, candidate priority reordering, and reservation management code display
-- Reservation-code management with participant/headcount edits, drag-based pending candidate edits, candidate priority reordering, password checks, cancellation, update labeling, and unsaved-change leave warnings
+- Host event management with confirmed/pending lists, approve/unconfirm, event deletion, in-app active-date/default-time edits with 0시/자정 presets, date navigation, read-only schedule calendar, and draft-save tap/drag availability editing
+- Guest event reservation creation with tap/drag 30-minute candidate selection, candidate priority reordering, and reservation management code display
+- Reservation-code management with participant/headcount edits, tap/drag pending candidate edits, candidate priority reordering, password checks, cancellation, update labeling, and unsaved-change leave warnings
 
 ## Remaining Mobile Work
 
