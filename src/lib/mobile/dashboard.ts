@@ -46,12 +46,18 @@ export type MobileDashboardParticipant = Pick<
   "created_at" | "guest_name" | "id" | "is_creator" | "reservation_id" | "user_id"
 >;
 
+export type MobileTimeBlock = Pick<
+  Tables<"time_blocks">,
+  "end_at" | "event_id" | "id" | "note" | "start_at" | "type"
+>;
+
 export type MobileHostedEvent = MobileDashboardEvent & {
   approvedCount: number;
   confirmedSlots: MobileDashboardSlot[];
   participants: MobileDashboardParticipant[];
   pendingCount: number;
   pendingSlots: MobileDashboardSlot[];
+  timeBlocks: MobileTimeBlock[];
 };
 
 export type MobileGuestReservation = MobileDashboardReservation & {
@@ -88,6 +94,10 @@ export async function getMobileDashboardForUser(
     admin,
     hostedReservations.map((reservation) => reservation.id),
   );
+  const hostedTimeBlocks = await listTimeBlocksForEventIds(
+    admin,
+    hostedEvents.map((event) => event.id),
+  );
   const guestEvents = await listEventsByIds(
     admin,
     guestReservations.map((reservation) => reservation.event_id),
@@ -108,6 +118,7 @@ export async function getMobileDashboardForUser(
         hostedReservations,
         hostedSlots,
         participants,
+        hostedTimeBlocks,
       ),
     ),
     reservations: guestReservations.map((reservation) => ({
@@ -133,6 +144,7 @@ function buildHostedEventSummary(
   reservations: MobileDashboardReservation[],
   slots: MobileDashboardSlot[],
   participants: MobileDashboardParticipant[],
+  timeBlocks: MobileTimeBlock[],
 ): MobileHostedEvent {
   const eventReservations = reservations.filter(
     (reservation) => reservation.event_id === event.id,
@@ -159,7 +171,29 @@ function buildHostedEventSummary(
     pendingSlots: eventSlots.filter(
       (slot) => reservationById.get(slot.reservation_id)?.status === "PENDING",
     ),
+    timeBlocks: timeBlocks.filter((block) => block.event_id === event.id),
   };
+}
+
+async function listTimeBlocksForEventIds(
+  admin: AdminClient,
+  eventIds: string[],
+) {
+  if (eventIds.length === 0) {
+    return [];
+  }
+
+  const { data, error } = await admin
+    .from("time_blocks")
+    .select("id,event_id,start_at,end_at,type,note")
+    .in("event_id", eventIds)
+    .order("start_at", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data ?? [];
 }
 
 async function listParticipantsForReservationIds(

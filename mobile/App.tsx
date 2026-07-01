@@ -98,6 +98,20 @@ type MobileDashboardSlot = {
   reservation_id: string;
   start_at: string;
 };
+type MobileTimeBlock = {
+  end_at: string;
+  event_id: string;
+  id: string;
+  note: string | null;
+  start_at: string;
+  type: "AVAILABLE" | "BLOCKED";
+};
+type MobileTimeBlockDraft = {
+  endAt: string;
+  note?: string | null;
+  startAt: string;
+  type: "AVAILABLE" | "BLOCKED";
+};
 type MobileDashboardParticipant = {
   created_at?: string;
   guest_name: string;
@@ -122,6 +136,7 @@ type MobileHostedEvent = {
   participants: MobileDashboardParticipant[];
   pendingCount: number;
   pendingSlots: MobileDashboardSlot[];
+  timeBlocks: MobileTimeBlock[];
   title: string;
 };
 type MobileGuestReservation = {
@@ -171,6 +186,10 @@ type RenderContext = {
   onRefreshDashboard: () => Promise<void>;
   onReviewReservation: (payload: ReviewReservationPayload) => Promise<void>;
   onResolveCode: (code: string) => Promise<void>;
+  onSaveTimeBlocks: (
+    eventId: string,
+    blocks: MobileTimeBlockDraft[],
+  ) => Promise<void>;
   onSignOut: () => Promise<void>;
   onSignIn: (email: string, password: string) => Promise<void>;
   onSignUp: (
@@ -355,6 +374,21 @@ async function createMobileEvent(payload: CreateEventPayload, token: string) {
     method: "POST",
     token,
   });
+}
+
+async function saveMobileTimeBlocks(
+  eventId: string,
+  blocks: MobileTimeBlockDraft[],
+  token: string,
+) {
+  return apiRequest<{ timeBlocks: MobileTimeBlock[] }>(
+    "/api/mobile/events/time-blocks",
+    {
+      body: JSON.stringify({ blocks, eventId }),
+      method: "POST",
+      token,
+    },
+  );
 }
 
 async function reviewMobileReservation(
@@ -789,6 +823,47 @@ function NativeShell() {
     }
   }
 
+  async function handleSaveTimeBlocks(
+    eventId: string,
+    blocks: MobileTimeBlockDraft[],
+  ) {
+    if (!session?.accessToken) {
+      setApiError("로그인이 필요합니다.");
+      return;
+    }
+
+    setApiError(null);
+    setIsApiLoading(true);
+
+    try {
+      let nextSession = await getUsableSession(session);
+
+      try {
+        await saveMobileTimeBlocks(eventId, blocks, nextSession.accessToken);
+      } catch (error) {
+        if (!isUnauthorizedError(error)) {
+          throw error;
+        }
+
+        nextSession = await refreshSession(session.refreshToken);
+        await saveMobileTimeBlocks(eventId, blocks, nextSession.accessToken);
+      }
+
+      const { dashboard: nextDashboard, session: dashboardSession } =
+        await loadDashboardWithSession(nextSession);
+
+      setDashboard(nextDashboard);
+      setSession(dashboardSession);
+      await saveStoredSession(dashboardSession);
+    } catch (error) {
+      setApiError(
+        error instanceof Error ? error.message : "가능 시간을 저장하지 못했습니다.",
+      );
+    } finally {
+      setIsApiLoading(false);
+    }
+  }
+
   async function handleResolveCode(code: string) {
     const trimmedCode = code.trim();
 
@@ -846,6 +921,7 @@ function NativeShell() {
     onRefreshDashboard: handleRefreshDashboard,
     onReviewReservation: handleReviewReservation,
     onResolveCode: handleResolveCode,
+    onSaveTimeBlocks: handleSaveTimeBlocks,
     onSignOut: handleSignOut,
     onSignIn: handleSignIn,
     onSignUp: handleSignUp,
@@ -1034,6 +1110,7 @@ function renderRoute(route: RouteKey, context: RenderContext) {
         isLoading={context.isApiLoading}
         onRefresh={context.onRefreshDashboard}
         onReviewReservation={context.onReviewReservation}
+        onSaveTimeBlocks={context.onSaveTimeBlocks}
         session={context.session}
       />
     );
@@ -1381,12 +1458,17 @@ function HostEventManageScreen({
   isLoading,
   onRefresh,
   onReviewReservation,
+  onSaveTimeBlocks,
   session,
 }: {
   event: MobileHostedEvent | null;
   isLoading: boolean;
   onRefresh: () => Promise<void>;
   onReviewReservation: (payload: ReviewReservationPayload) => Promise<void>;
+  onSaveTimeBlocks: (
+    eventId: string,
+    blocks: MobileTimeBlockDraft[],
+  ) => Promise<void>;
   session: MobileSession | null;
 }) {
   const confirmedSlots = useMemo(
@@ -1455,7 +1537,11 @@ function HostEventManageScreen({
             </View>
           </View>
 
-          <HostEventCalendar event={event} />
+          <HostEventCalendar
+            event={event}
+            isSaving={isLoading}
+            onSaveTimeBlocks={onSaveTimeBlocks}
+          />
 
           <SectionHeader title="확정 일정" />
           {confirmedSlots.length > 0 ? (
@@ -1498,7 +1584,19 @@ function HostEventManageScreen({
   );
 }
 
-function HostEventCalendar({ event }: { event: MobileHostedEvent }) {
+function HostEventCalendar({
+  event,
+  isSaving,
+  onSaveTimeBlocks,
+}: {
+  event: MobileHostedEvent;
+  isSaving: boolean;
+  onSaveTimeBlocks: (
+    eventId: string,
+    blocks: MobileTimeBlockDraft[],
+  ) => Promise<void>;
+}) {
+  const [isEditingAvailability, setIsEditingAvailability] = useState(false);
   const eventDates = useMemo(
     () => buildDateList(event.date_start, event.date_end),
     [event.date_end, event.date_start],
@@ -1540,11 +1638,58 @@ function HostEventCalendar({ event }: { event: MobileHostedEvent }) {
     () => buildTimelineRows(timelineBounds.start, timelineBounds.end),
     [timelineBounds.end, timelineBounds.start],
   );
+  const availabilityCells = useMemo(
+    () =>
+      buildAvailabilityCells(
+        currentDate,
+        event.daily_start_time,
+        event.daily_end_time,
+      ),
+    [currentDate, event.daily_end_time, event.daily_start_time],
+  );
+  const visibleAvailabilityBlocks = useMemo(
+    () =>
+      event.timeBlocks
+        .filter((block) => block.type === "AVAILABLE")
+        .map((block) => ({
+          block,
+          overlap: getRangeOverlapMinutes(
+            {
+              endAt: block.end_at,
+              startAt: block.start_at,
+            },
+            currentDate,
+          ),
+        }))
+        .filter(
+          (
+            item,
+          ): item is {
+            block: MobileTimeBlock;
+            overlap: { end: number; start: number };
+          } => item.overlap !== null,
+        ),
+    [currentDate, event.timeBlocks],
+  );
   const timelineHeight = Math.max(
     ((timelineBounds.end - timelineBounds.start) / 60) *
       MANAGE_TIMELINE_HOUR_HEIGHT,
     MANAGE_TIMELINE_HOUR_HEIGHT,
   );
+
+  async function handleToggleAvailability(range: {
+    endAt: string;
+    startAt: string;
+  }) {
+    if (isSaving) {
+      return;
+    }
+
+    await onSaveTimeBlocks(
+      event.id,
+      toggleMobileAvailabilityBlocks(event.timeBlocks, range),
+    );
+  }
 
   return (
     <View style={styles.manageCalendarCard}>
@@ -1553,9 +1698,38 @@ function HostEventCalendar({ event }: { event: MobileHostedEvent }) {
           <Text style={styles.manageCalendarEyebrow}>CALENDAR</Text>
           <Text style={styles.manageCalendarTitle}>일정 달력</Text>
         </View>
-        <Text style={styles.manageCalendarCount}>
-          {visibleSlots.length > 0 ? `${visibleSlots.length}개` : "비어 있음"}
-        </Text>
+        <View style={styles.manageCalendarActions}>
+          <Text style={styles.manageCalendarCount}>
+            일정 {visibleSlots.length} · 가능 {visibleAvailabilityBlocks.length}
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            disabled={isSaving}
+            onPress={() => setIsEditingAvailability((current) => !current)}
+            style={({ pressed }) => [
+              styles.manageEditButton,
+              isEditingAvailability && styles.manageEditButtonActive,
+              pressed && !isSaving && styles.pressed,
+              isSaving && styles.primaryButtonDisabled,
+            ]}
+          >
+            {isSaving ? (
+              <ActivityIndicator
+                color={isEditingAvailability ? BACKGROUND : PRIMARY}
+                size="small"
+              />
+            ) : (
+              <Text
+                style={[
+                  styles.manageEditButtonText,
+                  isEditingAvailability && styles.manageEditButtonTextActive,
+                ]}
+              >
+                {isEditingAvailability ? "편집 중" : "가능 시간 편집"}
+              </Text>
+            )}
+          </Pressable>
+        </View>
       </View>
 
       <ScrollView
@@ -1637,6 +1811,67 @@ function HostEventCalendar({ event }: { event: MobileHostedEvent }) {
               <View style={styles.manageTimelineHalfLine} />
             </View>
           ))}
+          {isEditingAvailability
+            ? availabilityCells.map((cell) => {
+                const isAvailable = isRangeInAvailableBlocks(
+                  event.timeBlocks,
+                  cell,
+                );
+                const top =
+                  ((cell.startMinute - timelineBounds.start) / 60) *
+                  MANAGE_TIMELINE_HOUR_HEIGHT;
+                const height =
+                  ((cell.endMinute - cell.startMinute) / 60) *
+                  MANAGE_TIMELINE_HOUR_HEIGHT;
+
+                return (
+                  <Pressable
+                    accessibilityLabel={
+                      isAvailable ? "가능 시간 해제" : "가능 시간 추가"
+                    }
+                    accessibilityRole="button"
+                    disabled={isSaving}
+                    key={cell.startAt}
+                    onPress={() => handleToggleAvailability(cell)}
+                    style={({ pressed }) => [
+                      styles.manageAvailabilityCell,
+                      isAvailable && styles.manageAvailabilityCellActive,
+                      { height, top },
+                      pressed && !isSaving && styles.pressed,
+                    ]}
+                  >
+                    {isAvailable ? (
+                      <Text style={styles.manageAvailabilityCellText}>
+                        가능
+                      </Text>
+                    ) : null}
+                  </Pressable>
+                );
+              })
+            : visibleAvailabilityBlocks.map(({ block, overlap }) => {
+                const top =
+                  ((overlap.start - timelineBounds.start) / 60) *
+                    MANAGE_TIMELINE_HOUR_HEIGHT +
+                  3;
+                const height = Math.max(
+                  ((overlap.end - overlap.start) / 60) *
+                    MANAGE_TIMELINE_HOUR_HEIGHT -
+                    6,
+                  MANAGE_TIMELINE_BLOCK_MIN_HEIGHT,
+                );
+
+                return (
+                  <View
+                    key={block.id}
+                    style={[
+                      styles.manageAvailabilityBlock,
+                      { height, top },
+                    ]}
+                  >
+                    <Text style={styles.manageAvailabilityBlockText}>가능</Text>
+                  </View>
+                );
+              })}
           {visibleSlots.map(({ overlap, slot }) => {
             const participants = getParticipantsForSlot(event, slot);
             const participantLabel =
@@ -2617,23 +2852,36 @@ function getSlotDisplayEnd(slot: MobileDashboardSlot) {
 }
 
 function getSlotOverlapMinutes(slot: MobileDashboardSlot, dateKey: string) {
+  return getRangeOverlapMinutes(
+    {
+      endAt: getSlotDisplayEnd(slot),
+      startAt: getSlotDisplayStart(slot),
+    },
+    dateKey,
+  );
+}
+
+function getRangeOverlapMinutes(
+  range: { endAt: string; startAt: string },
+  dateKey: string,
+) {
   const dayStart = parseDateValue(dateKey);
   const dayEnd = new Date(dayStart);
-  const slotStart = parseDateValue(getSlotDisplayStart(slot));
-  const slotEnd = parseDateValue(getSlotDisplayEnd(slot));
+  const rangeStart = parseDateValue(range.startAt);
+  const rangeEnd = parseDateValue(range.endAt);
 
   dayEnd.setDate(dayEnd.getDate() + 1);
 
   if (
     Number.isNaN(dayStart.getTime()) ||
-    Number.isNaN(slotStart.getTime()) ||
-    Number.isNaN(slotEnd.getTime())
+    Number.isNaN(rangeStart.getTime()) ||
+    Number.isNaN(rangeEnd.getTime())
   ) {
     return null;
   }
 
-  const overlapStart = Math.max(slotStart.getTime(), dayStart.getTime());
-  const overlapEnd = Math.min(slotEnd.getTime(), dayEnd.getTime());
+  const overlapStart = Math.max(rangeStart.getTime(), dayStart.getTime());
+  const overlapEnd = Math.min(rangeEnd.getTime(), dayEnd.getTime());
 
   if (overlapEnd <= overlapStart) {
     return null;
@@ -2643,6 +2891,167 @@ function getSlotOverlapMinutes(slot: MobileDashboardSlot, dateKey: string) {
     end: Math.ceil((overlapEnd - dayStart.getTime()) / 60000),
     start: Math.floor((overlapStart - dayStart.getTime()) / 60000),
   };
+}
+
+function buildAvailabilityCells(
+  dateKey: string,
+  dailyStartTime: string,
+  dailyEndTime: string,
+) {
+  const startClock = parseClockMinutes(dailyStartTime);
+  const startMinute = Number.isNaN(startClock) ? 540 : Math.max(0, startClock);
+  const endClock = parseClockMinutes(dailyEndTime);
+  const endMinute =
+    Number.isNaN(endClock) || endClock <= startMinute ? 1440 : endClock;
+  const cells: Array<{
+    endAt: string;
+    endMinute: number;
+    startAt: string;
+    startMinute: number;
+  }> = [];
+
+  for (let minute = startMinute; minute < endMinute; minute += 30) {
+    const nextMinute = Math.min(minute + 30, endMinute);
+
+    cells.push({
+      endAt: buildDateTimeForMinute(dateKey, nextMinute),
+      endMinute: nextMinute,
+      startAt: buildDateTimeForMinute(dateKey, minute),
+      startMinute: minute,
+    });
+  }
+
+  return cells;
+}
+
+function isRangeInAvailableBlocks(
+  blocks: MobileTimeBlock[],
+  range: { endAt: string; startAt: string },
+) {
+  const start = parseDateValue(range.startAt).getTime();
+  const end = parseDateValue(range.endAt).getTime();
+
+  return blocks.some((block) => {
+    if (block.type !== "AVAILABLE") {
+      return false;
+    }
+
+    const blockStart = parseDateValue(block.start_at).getTime();
+    const blockEnd = parseDateValue(block.end_at).getTime();
+
+    return blockStart <= start && end <= blockEnd;
+  });
+}
+
+function toggleMobileAvailabilityBlocks(
+  blocks: MobileTimeBlock[],
+  range: { endAt: string; startAt: string },
+): MobileTimeBlockDraft[] {
+  const drafts = blocks.map<MobileTimeBlockDraft>((block) => ({
+    endAt: block.end_at,
+    note: block.note,
+    startAt: block.start_at,
+    type: block.type,
+  }));
+  const availableBlocks = drafts.filter((block) => block.type === "AVAILABLE");
+  const otherBlocks = drafts.filter((block) => block.type !== "AVAILABLE");
+  const nextAvailableBlocks = isRangeInAvailableBlocks(blocks, range)
+    ? availableBlocks.flatMap((block) =>
+        subtractMobileTimeRange(block, range).map((piece) => ({
+          ...piece,
+          note: block.note ?? null,
+          type: "AVAILABLE" as const,
+        })),
+      )
+    : [
+        ...availableBlocks,
+        {
+          ...range,
+          note: null,
+          type: "AVAILABLE" as const,
+        },
+      ];
+
+  return mergeMobileTimeBlockDrafts([...otherBlocks, ...nextAvailableBlocks]);
+}
+
+function subtractMobileTimeRange(
+  range: { endAt: string; startAt: string },
+  removal: { endAt: string; startAt: string },
+) {
+  if (!mobileRangesOverlap(range, removal)) {
+    return [range];
+  }
+
+  const rangeStart = parseDateValue(range.startAt).getTime();
+  const rangeEnd = parseDateValue(range.endAt).getTime();
+  const removalStart = parseDateValue(removal.startAt).getTime();
+  const removalEnd = parseDateValue(removal.endAt).getTime();
+  const pieces: Array<{ endAt: string; startAt: string }> = [];
+
+  if (rangeStart < removalStart) {
+    pieces.push({
+      endAt: new Date(Math.min(removalStart, rangeEnd)).toISOString(),
+      startAt: range.startAt,
+    });
+  }
+
+  if (removalEnd < rangeEnd) {
+    pieces.push({
+      endAt: range.endAt,
+      startAt: new Date(Math.max(removalEnd, rangeStart)).toISOString(),
+    });
+  }
+
+  return pieces.filter((piece) => isMobileTimeRangeValid(piece));
+}
+
+function mergeMobileTimeBlockDrafts(blocks: MobileTimeBlockDraft[]) {
+  return (["AVAILABLE", "BLOCKED"] as const).flatMap((type) => {
+    const typeBlocks = blocks
+      .filter((block) => block.type === type && isMobileTimeRangeValid(block))
+      .sort(
+        (left, right) =>
+          parseDateValue(left.startAt).getTime() -
+          parseDateValue(right.startAt).getTime(),
+      );
+
+    return typeBlocks.reduce<MobileTimeBlockDraft[]>((merged, block) => {
+      const previous = merged.at(-1);
+
+      if (
+        previous &&
+        parseDateValue(block.startAt).getTime() <=
+          parseDateValue(previous.endAt).getTime()
+      ) {
+        previous.endAt = new Date(
+          Math.max(
+            parseDateValue(previous.endAt).getTime(),
+            parseDateValue(block.endAt).getTime(),
+          ),
+        ).toISOString();
+        return merged;
+      }
+
+      return [...merged, { ...block, note: block.note ?? null, type }];
+    }, []);
+  });
+}
+
+function mobileRangesOverlap(
+  left: { endAt: string; startAt: string },
+  right: { endAt: string; startAt: string },
+) {
+  return (
+    parseDateValue(left.startAt).getTime() <
+      parseDateValue(right.endAt).getTime() &&
+    parseDateValue(right.startAt).getTime() <
+      parseDateValue(left.endAt).getTime()
+  );
+}
+
+function isMobileTimeRangeValid(range: { endAt: string; startAt: string }) {
+  return parseDateValue(range.startAt).getTime() < parseDateValue(range.endAt).getTime();
 }
 
 function buildManageTimelineBounds(
@@ -2707,6 +3116,15 @@ function parseClockMinutes(value: string) {
   }
 
   return Math.min(1440, hours * 60 + minutes);
+}
+
+function buildDateTimeForMinute(dateKey: string, minuteOfDay: number) {
+  const date = parseDateValue(dateKey);
+  const clampedMinute = Math.min(1440, Math.max(0, minuteOfDay));
+
+  date.setHours(0, clampedMinute, 0, 0);
+
+  return date.toISOString();
 }
 
 function formatTimelineHour(minutes: number) {
@@ -3417,6 +3835,10 @@ const styles = StyleSheet.create({
     gap: 12,
     padding: 14,
   },
+  manageCalendarActions: {
+    alignItems: "flex-end",
+    gap: 8,
+  },
   manageCalendarCount: {
     backgroundColor: "#F9FAFB",
     borderColor: BORDER,
@@ -3531,9 +3953,68 @@ const styles = StyleSheet.create({
     marginHorizontal: -2,
     paddingHorizontal: 2,
   },
+  manageEditButton: {
+    alignItems: "center",
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 999,
+    borderWidth: 1,
+    minHeight: 34,
+    justifyContent: "center",
+    minWidth: 94,
+    paddingHorizontal: 12,
+  },
+  manageEditButtonActive: {
+    backgroundColor: PRIMARY,
+    borderColor: PRIMARY,
+  },
+  manageEditButtonText: {
+    color: PRIMARY,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  manageEditButtonTextActive: {
+    color: BACKGROUND,
+  },
   manageTimeline: {
     flexDirection: "row",
     gap: 10,
+  },
+  manageAvailabilityBlock: {
+    backgroundColor: "rgba(0, 38, 75, 0.08)",
+    borderColor: "rgba(0, 38, 75, 0.16)",
+    borderRadius: 8,
+    borderWidth: 1,
+    left: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    position: "absolute",
+    right: 6,
+  },
+  manageAvailabilityBlockText: {
+    color: PRIMARY,
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  manageAvailabilityCell: {
+    backgroundColor: "rgba(17, 24, 39, 0.02)",
+    borderColor: "rgba(229, 231, 235, 0.9)",
+    borderRadius: 5,
+    borderWidth: 1,
+    justifyContent: "center",
+    left: 6,
+    paddingHorizontal: 8,
+    position: "absolute",
+    right: 6,
+  },
+  manageAvailabilityCellActive: {
+    backgroundColor: "rgba(0, 38, 75, 0.14)",
+    borderColor: "rgba(0, 38, 75, 0.32)",
+  },
+  manageAvailabilityCellText: {
+    color: PRIMARY,
+    fontSize: 10,
+    fontWeight: "900",
   },
   manageTimelineBlock: {
     borderRadius: 8,
