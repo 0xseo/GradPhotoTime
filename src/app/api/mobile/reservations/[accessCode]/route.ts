@@ -5,6 +5,7 @@ import {
   readJsonBody,
 } from "@/lib/mobile/api-response";
 import { getMobileUserFromRequest } from "@/lib/mobile/auth";
+import { normalizeReservationSlotPriorities } from "@/lib/reservations/priority";
 import { verifyReservationPassword } from "@/lib/security/passwords";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import type { Tables } from "@/lib/supabase/database.types";
@@ -446,6 +447,7 @@ async function replaceReservationSlots(
   );
 
   if (nextSlots.length === 0) {
+    await normalizeReservationSlotPriorities(admin, reservation.id);
     return;
   }
 
@@ -462,6 +464,8 @@ async function replaceReservationSlots(
   if (insertError) {
     throw new Error(insertError.message);
   }
+
+  await normalizeReservationSlotPriorities(admin, reservation.id);
 }
 
 async function listConfirmedSlots(

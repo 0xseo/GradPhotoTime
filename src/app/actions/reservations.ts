@@ -14,6 +14,7 @@ import {
   type CandidateSlotBlockReason,
 } from "@/lib/reservations/rules";
 import { getSlotDisplayRange } from "@/lib/reservations/slots";
+import { normalizeReservationSlotPriorities } from "@/lib/reservations/priority";
 import {
   buildBufferTimeRangeItems,
   getBufferOverrideKey,
@@ -298,6 +299,8 @@ export async function reviewReservation(
       }
     }
 
+    await normalizeReservationSlotPriorities(admin, reservation.id);
+
     const reservationGroup = await getReservationGroupById(reservation.id);
 
     revalidateReservationPaths(
@@ -580,6 +583,8 @@ export async function updateReservationGroup(
       );
 
       if (requestedSlots.length === 0) {
+        await normalizeReservationSlotPriorities(supabase, reservation.id);
+
         const reservationGroup = await getReservationGroupById(reservation.id);
         const eventCode = await getEventCodeById(reservation.event_id);
 
@@ -607,6 +612,8 @@ export async function updateReservationGroup(
       if (insertError) {
         return actionError(insertError.message);
       }
+
+      await normalizeReservationSlotPriorities(supabase, reservation.id);
     }
 
     const reservationGroup = await getReservationGroupById(reservation.id);

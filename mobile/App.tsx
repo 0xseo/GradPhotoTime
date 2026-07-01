@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  BackHandler,
+  Linking,
   Modal,
   PanResponder,
   Platform,
@@ -247,27 +249,12 @@ type MobileReservationManagement = MobileEventDetail & {
     updated_at: string;
   };
 };
-type AccessPreview =
-  | {
-      code: string;
-      kind: "event";
-      meta?: string;
-      title: string;
-      subtitle: string;
-    }
-  | {
-      code: string;
-      kind: "reservation";
-      meta?: string;
-      title: string;
-      subtitle: string;
-    };
 type RenderContext = {
-  accessPreview: AccessPreview | null;
   apiError: string | null;
   dashboard: MobileDashboardData | null;
   isApiLoading: boolean;
   onCreateEvent: (payload: CreateEventPayload) => Promise<void>;
+  onDeleteEvent: (eventId: string) => Promise<boolean>;
   onOpenHostEvent: (eventId: string) => void;
   onRefreshDashboard: () => Promise<void>;
   onCreateReservation: (
@@ -294,6 +281,7 @@ type RenderContext = {
     eventId: string,
     blocks: MobileTimeBlockDraft[],
   ) => Promise<boolean>;
+  onSetUnsavedChanges: (hasChanges: boolean) => void;
   onSignOut: () => Promise<void>;
   onSignIn: (email: string, password: string) => Promise<void>;
   onSignUp: (
@@ -483,6 +471,16 @@ async function createMobileEvent(payload: CreateEventPayload, token: string) {
   });
 }
 
+async function deleteMobileEvent(eventId: string, token: string) {
+  return apiRequest<{ eventCode: string; eventId: string }>(
+    `/api/mobile/events/${encodeURIComponent(eventId)}`,
+    {
+      method: "DELETE",
+      token,
+    },
+  );
+}
+
 async function saveMobileTimeBlocks(
   eventId: string,
   blocks: MobileTimeBlockDraft[],
@@ -545,40 +543,6 @@ async function loadMobileEventDetail(eventCode: string) {
   return apiRequest<MobileEventDetail>(
     `/api/mobile/events/${encodeURIComponent(eventCode)}`,
   );
-}
-
-async function loadEventPreview(eventCode: string) {
-  const data = await loadMobileEventDetail(eventCode);
-
-  return {
-    code: data.event.event_code,
-    kind: "event" as const,
-    subtitle: `${formatDate(data.event.date_start)} - ${formatDate(data.event.date_end)} · 가능 시간 ${data.timeBlocks.length}개`,
-    title: data.event.title,
-  };
-}
-
-async function loadReservationPreview(accessCode: string) {
-  const data = await apiRequest<{
-    event: {
-      title: string;
-    };
-    reservation: {
-      reservation_access_code: string;
-      slots: MobileDashboardSlot[];
-      status: MobileGuestReservation["status"];
-    };
-  }>(`/api/mobile/reservations/${encodeURIComponent(accessCode)}`);
-  const confirmed = data.reservation.slots.find((slot) => slot.is_confirmed);
-
-  return {
-    code: data.reservation.reservation_access_code,
-    kind: "reservation" as const,
-    subtitle: confirmed
-      ? `확정 · ${formatRange(confirmed.confirmed_start_at ?? confirmed.start_at, confirmed.confirmed_end_at ?? confirmed.end_at)}`
-      : `${statusLabel(data.reservation.status)} · 후보 ${data.reservation.slots.length}개`,
-    title: data.event.title,
-  };
 }
 
 async function loadMobileReservationManagement(
@@ -715,12 +679,11 @@ export default function App() {
 function NativeShell() {
   const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState<TabKey>("calendar");
-  const [accessPreview, setAccessPreview] = useState<AccessPreview | null>(
-    null,
-  );
   const [apiError, setApiError] = useState<string | null>(null);
   const [dashboard, setDashboard] = useState<MobileDashboardData | null>(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [isApiLoading, setIsApiLoading] = useState(false);
+  const [isLeaveConfirmVisible, setIsLeaveConfirmVisible] = useState(false);
   const [isRestoringSession, setIsRestoringSession] = useState(true);
   const [route, setRoute] = useState<RouteKey>("calendar");
   const [selectedHostEventId, setSelectedHostEventId] = useState<string | null>(
@@ -734,6 +697,7 @@ function NativeShell() {
   >(null);
   const [session, setSession] = useState<MobileSession | null>(null);
   const [isQuickOpen, setIsQuickOpen] = useState(false);
+  const [pendingLeaveTab, setPendingLeaveTab] = useState<TabKey | null>(null);
   const quickActions = useMemo(() => getQuickActions(activeTab), [activeTab]);
 
   const title = getTitle(route, activeTab);
@@ -796,11 +760,17 @@ function NativeShell() {
     setSelectedEventCode(null);
     setSelectedReservationCode(null);
     setIsQuickOpen(false);
+    setHasUnsavedChanges(false);
+    setIsLeaveConfirmVisible(false);
+    setPendingLeaveTab(null);
   }
 
   function openRoute(nextRoute: RouteKey) {
     setRoute(nextRoute);
     setIsQuickOpen(false);
+    setHasUnsavedChanges(false);
+    setIsLeaveConfirmVisible(false);
+    setPendingLeaveTab(null);
   }
 
   function openHostEvent(eventId: string) {
@@ -810,6 +780,9 @@ function NativeShell() {
     setSelectedReservationCode(null);
     setRoute("eventManage");
     setIsQuickOpen(false);
+    setHasUnsavedChanges(false);
+    setIsLeaveConfirmVisible(false);
+    setPendingLeaveTab(null);
   }
 
   function openEventReservation(eventCode: string) {
@@ -819,6 +792,9 @@ function NativeShell() {
     setSelectedReservationCode(null);
     setRoute("eventReserve");
     setIsQuickOpen(false);
+    setHasUnsavedChanges(false);
+    setIsLeaveConfirmVisible(false);
+    setPendingLeaveTab(null);
   }
 
   function openReservationManagement(accessCode: string) {
@@ -828,6 +804,49 @@ function NativeShell() {
     setSelectedHostEventId(null);
     setRoute("reservationManage");
     setIsQuickOpen(false);
+    setHasUnsavedChanges(false);
+    setIsLeaveConfirmVisible(false);
+    setPendingLeaveTab(null);
+  }
+
+  function requestOpenTab(tab: TabKey) {
+    if (hasUnsavedChanges && route !== tab) {
+      setPendingLeaveTab(tab);
+      setIsLeaveConfirmVisible(true);
+      return;
+    }
+
+    openTab(tab);
+  }
+
+  const handleBackPress = useCallback(() => {
+    if (hasUnsavedChanges) {
+      setPendingLeaveTab(null);
+      setIsLeaveConfirmVisible(true);
+      return;
+    }
+
+    openTab(activeTab);
+  }, [activeTab, hasUnsavedChanges]);
+
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener(
+      "hardwareBackPress",
+      () => {
+        if (route === activeTab) {
+          return false;
+        }
+
+        handleBackPress();
+        return true;
+      },
+    );
+
+    return () => subscription.remove();
+  }, [activeTab, handleBackPress, route]);
+
+  function handleConfirmLeave() {
+    openTab(pendingLeaveTab ?? activeTab);
   }
 
   function handleQuickPress() {
@@ -967,12 +986,57 @@ function NativeShell() {
       setDashboard(nextDashboard);
       setSession(dashboardSession);
       await saveStoredSession(dashboardSession);
+      setHasUnsavedChanges(false);
       setActiveTab("events");
       setRoute("events");
     } catch (error) {
       setApiError(
         error instanceof Error ? error.message : "이벤트 생성에 실패했습니다.",
       );
+    } finally {
+      setIsApiLoading(false);
+    }
+  }
+
+  async function handleDeleteEvent(eventId: string) {
+    if (!session?.accessToken) {
+      setApiError("로그인이 필요합니다.");
+      return false;
+    }
+
+    setApiError(null);
+    setIsApiLoading(true);
+
+    try {
+      let nextSession = await getUsableSession(session);
+
+      try {
+        await deleteMobileEvent(eventId, nextSession.accessToken);
+      } catch (error) {
+        if (!isUnauthorizedError(error)) {
+          throw error;
+        }
+
+        nextSession = await refreshSession(session.refreshToken);
+        await deleteMobileEvent(eventId, nextSession.accessToken);
+      }
+
+      const { dashboard: nextDashboard, session: dashboardSession } =
+        await loadDashboardWithSession(nextSession);
+
+      setDashboard(nextDashboard);
+      setSession(dashboardSession);
+      await saveStoredSession(dashboardSession);
+      setSelectedHostEventId(null);
+      setHasUnsavedChanges(false);
+      setActiveTab("events");
+      setRoute("events");
+      return true;
+    } catch (error) {
+      setApiError(
+        error instanceof Error ? error.message : "이벤트를 삭제하지 못했습니다.",
+      );
+      return false;
     } finally {
       setIsApiLoading(false);
     }
@@ -1048,6 +1112,7 @@ function NativeShell() {
       setDashboard(nextDashboard);
       setSession(dashboardSession);
       await saveStoredSession(dashboardSession);
+      setHasUnsavedChanges(false);
       return true;
     } catch (error) {
       setApiError(
@@ -1148,6 +1213,7 @@ function NativeShell() {
         await saveStoredSession(dashboardSession);
       }
 
+      setHasUnsavedChanges(false);
       return managementView;
     } catch (error) {
       setApiError(
@@ -1215,7 +1281,6 @@ function NativeShell() {
       return;
     }
 
-    setAccessPreview(null);
     setApiError(null);
     setIsApiLoading(true);
 
@@ -1231,18 +1296,14 @@ function NativeShell() {
         trimmedCode,
         nextSession?.accessToken,
       );
-      const preview =
-        resolved.kind === "event"
-          ? await loadEventPreview(resolved.code)
-          : await loadReservationPreview(resolved.code);
 
-      setAccessPreview({
-        ...preview,
-        meta:
-          resolved.kind === "event" && resolved.isHost
-            ? "내가 만든 이벤트"
-            : undefined,
-      });
+      if (resolved.kind === "event" && resolved.isHost) {
+        openHostEvent(resolved.targetId);
+      } else if (resolved.kind === "event") {
+        openEventReservation(resolved.code);
+      } else {
+        openReservationManagement(resolved.code);
+      }
     } catch (error) {
       setApiError(
         error instanceof Error
@@ -1255,12 +1316,12 @@ function NativeShell() {
   }
 
   const renderContext: RenderContext = {
-    accessPreview,
     apiError,
     dashboard,
     isApiLoading: isBusy,
     onCreateEvent: handleCreateEvent,
     onCreateReservation: handleCreateReservation,
+    onDeleteEvent: handleDeleteEvent,
     onOpenEventReservation: openEventReservation,
     onOpenHostEvent: openHostEvent,
     onOpenReservationManagement: openReservationManagement,
@@ -1268,6 +1329,7 @@ function NativeShell() {
     onReviewReservation: handleReviewReservation,
     onResolveCode: handleResolveCode,
     onSaveTimeBlocks: handleSaveTimeBlocks,
+    onSetUnsavedChanges: setHasUnsavedChanges,
     onSignOut: handleSignOut,
     onSignIn: handleSignIn,
     onSignUp: handleSignUp,
@@ -1284,7 +1346,7 @@ function NativeShell() {
       <StatusBar backgroundColor={BACKGROUND} barStyle="dark-content" />
       <View style={styles.app}>
         <Header
-          onBack={() => openTab(activeTab)}
+          onBack={handleBackPress}
           route={route}
           title={title}
         />
@@ -1298,51 +1360,53 @@ function NativeShell() {
           />
         ) : null}
 
-        <View
-          pointerEvents="box-none"
-          style={[styles.quickLayer, { bottom: insets.bottom + 88 }]}
-        >
-          {isQuickOpen ? (
-            <View style={styles.quickMenu}>
-              {quickActions.map((action) => (
-                <Pressable
-                  accessibilityRole="button"
-                  key={action.label}
-                  onPress={() => openRoute(action.route)}
-                  style={({ pressed }) => [
-                    styles.quickAction,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <View
-                    style={[
-                      styles.quickIcon,
-                      { backgroundColor: action.tone },
+        {route !== "create" ? (
+          <View
+            pointerEvents="box-none"
+            style={[styles.quickLayer, { bottom: insets.bottom + 88 }]}
+          >
+            {isQuickOpen ? (
+              <View style={styles.quickMenu}>
+                {quickActions.map((action) => (
+                  <Pressable
+                    accessibilityRole="button"
+                    key={action.label}
+                    onPress={() => openRoute(action.route)}
+                    style={({ pressed }) => [
+                      styles.quickAction,
+                      pressed && styles.pressed,
                     ]}
                   >
-                    <Text style={styles.quickIconText}>+</Text>
-                  </View>
-                  <Text style={styles.quickActionText}>{action.label}</Text>
-                </Pressable>
-              ))}
-            </View>
-          ) : null}
+                    <View
+                      style={[
+                        styles.quickIcon,
+                        { backgroundColor: action.tone },
+                      ]}
+                    >
+                      <Text style={styles.quickIconText}>+</Text>
+                    </View>
+                    <Text style={styles.quickActionText}>{action.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
 
-          <Pressable
-            accessibilityLabel="빠른 작업"
-            accessibilityRole="button"
-            onPress={handleQuickPress}
-            style={({ pressed }) => [
-              styles.quickButton,
-              isQuickOpen && styles.quickButtonOpen,
-              pressed && styles.quickButtonPressed,
-            ]}
-          >
-            <Text style={styles.quickButtonText}>
-              {isQuickOpen ? "x" : "+"}
-            </Text>
-          </Pressable>
-        </View>
+            <Pressable
+              accessibilityLabel="빠른 작업"
+              accessibilityRole="button"
+              onPress={handleQuickPress}
+              style={({ pressed }) => [
+                styles.quickButton,
+                isQuickOpen && styles.quickButtonOpen,
+                pressed && styles.quickButtonPressed,
+              ]}
+            >
+              <Text style={styles.quickButtonText}>
+                {isQuickOpen ? "x" : "+"}
+              </Text>
+            </Pressable>
+          </View>
+        ) : null}
 
         <View
           style={[
@@ -1352,14 +1416,14 @@ function NativeShell() {
         >
           <View style={styles.tabBar}>
             {tabs.map((tab) => {
-              const isActive = tab.key === activeTab && route === tab.key;
+              const isActive = tab.key === activeTab;
 
               return (
                 <Pressable
                   accessibilityRole="tab"
                   accessibilityState={{ selected: isActive }}
                   key={tab.key}
-                  onPress={() => openTab(tab.key)}
+                  onPress={() => requestOpenTab(tab.key)}
                   style={({ pressed }) => [
                     styles.tab,
                     isActive && styles.activeTab,
@@ -1395,6 +1459,18 @@ function NativeShell() {
             })}
           </View>
         </View>
+
+        <ConfirmDialog
+          confirmLabel="나가기"
+          message="저장 버튼을 누르기 전 변경사항은 서버에 반영되지 않아요."
+          onCancel={() => {
+            setIsLeaveConfirmVisible(false);
+            setPendingLeaveTab(null);
+          }}
+          onConfirm={handleConfirmLeave}
+          title="저장하지 않은 변경사항이 있어요"
+          visible={isLeaveConfirmVisible}
+        />
       </View>
     </SafeAreaView>
   );
@@ -1462,9 +1538,11 @@ function renderRoute(route: RouteKey, context: RenderContext) {
           ) ?? null
         }
         isLoading={context.isApiLoading}
+        onDeleteEvent={context.onDeleteEvent}
         onRefresh={context.onRefreshDashboard}
         onReviewReservation={context.onReviewReservation}
         onSaveTimeBlocks={context.onSaveTimeBlocks}
+        onSetUnsavedChanges={context.onSetUnsavedChanges}
         session={context.session}
       />
     );
@@ -1503,6 +1581,7 @@ function renderRoute(route: RouteKey, context: RenderContext) {
         apiError={context.apiError}
         isLoading={context.isApiLoading}
         onCreateEvent={context.onCreateEvent}
+        onSetUnsavedChanges={context.onSetUnsavedChanges}
         session={context.session}
       />
     );
@@ -1511,11 +1590,8 @@ function renderRoute(route: RouteKey, context: RenderContext) {
   if (route === "access") {
     return (
       <AccessScreen
-        accessPreview={context.accessPreview}
         apiError={context.apiError}
         isLoading={context.isApiLoading}
-        onOpenEventReservation={context.onOpenEventReservation}
-        onOpenReservationManagement={context.onOpenReservationManagement}
         onResolveCode={context.onResolveCode}
       />
     );
@@ -1528,6 +1604,8 @@ function renderRoute(route: RouteKey, context: RenderContext) {
         eventCode={context.selectedEventCode}
         isLoading={context.isApiLoading}
         onCreateReservation={context.onCreateReservation}
+        onOpenReservationManagement={context.onOpenReservationManagement}
+        onSetUnsavedChanges={context.onSetUnsavedChanges}
         session={context.session}
       />
     );
@@ -1540,6 +1618,7 @@ function renderRoute(route: RouteKey, context: RenderContext) {
         apiError={context.apiError}
         isLoading={context.isApiLoading}
         onCancelReservation={context.onCancelReservationManagement}
+        onSetUnsavedChanges={context.onSetUnsavedChanges}
         onUpdateReservation={context.onUpdateReservationManagement}
         session={context.session}
       />
@@ -1948,21 +2027,26 @@ function HostEventsScreen({
 function HostEventManageScreen({
   event,
   isLoading,
+  onDeleteEvent,
   onRefresh,
   onReviewReservation,
   onSaveTimeBlocks,
+  onSetUnsavedChanges,
   session,
 }: {
   event: MobileHostedEvent | null;
   isLoading: boolean;
+  onDeleteEvent: (eventId: string) => Promise<boolean>;
   onRefresh: () => Promise<void>;
   onReviewReservation: (payload: ReviewReservationPayload) => Promise<void>;
   onSaveTimeBlocks: (
     eventId: string,
     blocks: MobileTimeBlockDraft[],
   ) => Promise<boolean>;
+  onSetUnsavedChanges: (hasChanges: boolean) => void;
   session: MobileSession | null;
 }) {
+  const [isDeleteConfirmVisible, setIsDeleteConfirmVisible] = useState(false);
   const confirmedSlots = useMemo(
     () => sortSlots(event?.confirmedSlots ?? []),
     [event?.confirmedSlots],
@@ -2027,6 +2111,34 @@ function HostEventManageScreen({
                   : "사용 안함"}
               </Text>
             </View>
+            <View style={styles.manageHeroActions}>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() =>
+                  void Linking.openURL(`${API_BASE_URL}/host/events/${event.id}`)
+                }
+                style={({ pressed }) => [
+                  styles.manageEditButton,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.manageEditButtonText}>
+                  날짜/기본시간 수정
+                </Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                disabled={isLoading}
+                onPress={() => setIsDeleteConfirmVisible(true)}
+                style={({ pressed }) => [
+                  styles.manageDeleteButton,
+                  isLoading && styles.primaryButtonDisabled,
+                  pressed && !isLoading && styles.pressed,
+                ]}
+              >
+                <Text style={styles.manageDeleteButtonText}>이벤트 삭제</Text>
+              </Pressable>
+            </View>
           </View>
 
           <HostEventCalendar
@@ -2036,6 +2148,7 @@ function HostEventManageScreen({
               .map((block) => `${block.id}:${block.start_at}:${block.end_at}`)
               .join("|")}`}
             onSaveTimeBlocks={onSaveTimeBlocks}
+            onSetUnsavedChanges={onSetUnsavedChanges}
           />
 
           <SectionHeader title="확정 일정" />
@@ -2058,8 +2171,9 @@ function HostEventManageScreen({
 
           <SectionHeader title="대기 후보" />
           {pendingSlots.length > 0 ? (
-            pendingSlots.map((slot) => (
+            pendingSlots.map((slot, index) => (
               <HostSlotCard
+                displayPriority={index + 1}
                 event={event}
                 isLoading={isLoading}
                 key={slot.id}
@@ -2075,6 +2189,20 @@ function HostEventManageScreen({
           )}
         </>
       ) : null}
+      {event ? (
+        <ConfirmDialog
+          confirmLabel="삭제"
+          isDanger
+          message="이벤트와 연결된 예약, 후보 시간, 가능 시간이 모두 삭제돼요."
+          onCancel={() => setIsDeleteConfirmVisible(false)}
+          onConfirm={() => {
+            setIsDeleteConfirmVisible(false);
+            void onDeleteEvent(event.id);
+          }}
+          title="이벤트를 삭제할까요?"
+          visible={isDeleteConfirmVisible}
+        />
+      ) : null}
     </ScrollView>
   );
 }
@@ -2083,6 +2211,7 @@ function HostEventCalendar({
   event,
   isSaving,
   onSaveTimeBlocks,
+  onSetUnsavedChanges,
 }: {
   event: MobileHostedEvent;
   isSaving: boolean;
@@ -2090,6 +2219,7 @@ function HostEventCalendar({
     eventId: string,
     blocks: MobileTimeBlockDraft[],
   ) => Promise<boolean>;
+  onSetUnsavedChanges: (hasChanges: boolean) => void;
 }) {
   const [isEditingAvailability, setIsEditingAvailability] = useState(false);
   const [draftBlocks, setDraftBlocks] = useState<MobileTimeBlockDraft[]>(() =>
@@ -2124,6 +2254,13 @@ function HostEventCalendar({
   const allSlots = useMemo(
     () => sortSlots([...event.confirmedSlots, ...event.pendingSlots]),
     [event.confirmedSlots, event.pendingSlots],
+  );
+  const pendingPriorityBySlotId = useMemo(
+    () =>
+      new Map(
+        sortSlots(event.pendingSlots).map((slot, index) => [slot.id, index + 1]),
+      ),
+    [event.pendingSlots],
   );
   const visibleSlots = useMemo(
     () =>
@@ -2192,11 +2329,13 @@ function HostEventCalendar({
   function handleStartAvailabilityEdit() {
     setDraftBlocks(committedBlocks);
     setIsEditingAvailability(true);
+    onSetUnsavedChanges(false);
   }
 
   function handleCancelAvailabilityEdit() {
     setDraftBlocks(committedBlocks);
     setIsEditingAvailability(false);
+    onSetUnsavedChanges(false);
   }
 
   async function handleSaveAvailability() {
@@ -2211,6 +2350,7 @@ function HostEventCalendar({
 
     if (didSave) {
       setIsEditingAvailability(false);
+      onSetUnsavedChanges(false);
     }
   }
 
@@ -2218,6 +2358,7 @@ function HostEventCalendar({
     range: MobileTimeRange,
     shouldBeAvailable: boolean,
   ) {
+    onSetUnsavedChanges(true);
     setDraftBlocks((current) =>
       setMobileAvailabilityDraftRange(current, range, shouldBeAvailable),
     );
@@ -2439,7 +2580,10 @@ function HostEventCalendar({
                 >
                   {slot.is_confirmed
                     ? "확정"
-                    : `후보 ${slot.priority_order}`}{" "}
+                    : `후보 ${
+                        pendingPriorityBySlotId.get(slot.id) ??
+                        slot.priority_order
+                      }`}{" "}
                   · {formatTimeRange(getSlotDisplayStart(slot), getSlotDisplayEnd(slot))}
                 </Text>
               </View>
@@ -2452,11 +2596,13 @@ function HostEventCalendar({
 }
 
 function HostSlotCard({
+  displayPriority,
   event,
   isLoading,
   onReviewReservation,
   slot,
 }: {
+  displayPriority?: number;
   event: MobileHostedEvent;
   isLoading: boolean;
   onReviewReservation: (payload: ReviewReservationPayload) => Promise<void>;
@@ -2486,7 +2632,11 @@ function HostSlotCard({
         </View>
         <StatusPill
           approved={slot.is_confirmed}
-          label={slot.is_confirmed ? "확정" : `후보 ${slot.priority_order}`}
+          label={
+            slot.is_confirmed
+              ? "확정"
+              : `후보 ${displayPriority ?? slot.priority_order}`
+          }
         />
       </View>
       <Text style={styles.hostSlotTime}>
@@ -2811,11 +2961,13 @@ function CreateEventScreen({
   apiError,
   isLoading,
   onCreateEvent,
+  onSetUnsavedChanges,
   session,
 }: {
   apiError: string | null;
   isLoading: boolean;
   onCreateEvent: (payload: CreateEventPayload) => Promise<void>;
+  onSetUnsavedChanges: (hasChanges: boolean) => void;
   session: MobileSession | null;
 }) {
   const today = useMemo(() => toDateInputValue(new Date()), []);
@@ -2829,6 +2981,16 @@ function CreateEventScreen({
   const [description, setDescription] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
   const [title, setTitle] = useState("");
+
+  function markDirty() {
+    onSetUnsavedChanges(true);
+  }
+
+  function updateDateRange(nextStart: string, nextEnd: string) {
+    setDateStart(nextStart);
+    setDateEnd(nextEnd);
+    markDirty();
+  }
 
   async function handleSubmit() {
     setLocalError(null);
@@ -2887,7 +3049,10 @@ function CreateEventScreen({
       <View style={styles.formCard}>
         <Text style={styles.formLabel}>이벤트명</Text>
         <TextInput
-          onChangeText={setTitle}
+          onChangeText={(value) => {
+            setTitle(value);
+            markDirty();
+          }}
           placeholder="졸업사진 일정"
           placeholderTextColor={SUBTLE}
           style={styles.input}
@@ -2897,7 +3062,10 @@ function CreateEventScreen({
         <Text style={styles.formLabel}>설명</Text>
         <TextInput
           multiline
-          onChangeText={setDescription}
+          onChangeText={(value) => {
+            setDescription(value);
+            markDirty();
+          }}
           placeholder="촬영 장소나 준비물을 적어두세요"
           placeholderTextColor={SUBTLE}
           style={[styles.input, styles.textArea]}
@@ -2915,7 +3083,10 @@ function CreateEventScreen({
             <Text style={styles.formLabel}>시작일</Text>
             <TextInput
               keyboardType="numbers-and-punctuation"
-              onChangeText={setDateStart}
+              onChangeText={(value) => {
+                setDateStart(value);
+                markDirty();
+              }}
               placeholder="2026-06-26"
               placeholderTextColor={SUBTLE}
               style={styles.input}
@@ -2926,7 +3097,10 @@ function CreateEventScreen({
             <Text style={styles.formLabel}>종료일</Text>
             <TextInput
               keyboardType="numbers-and-punctuation"
-              onChangeText={setDateEnd}
+              onChangeText={(value) => {
+                setDateEnd(value);
+                markDirty();
+              }}
               placeholder="2026-06-26"
               placeholderTextColor={SUBTLE}
               style={styles.input}
@@ -2934,6 +3108,11 @@ function CreateEventScreen({
             />
           </View>
         </View>
+        <DateRangeCalendarPicker
+          dateEnd={dateEnd}
+          dateStart={dateStart}
+          onChange={updateDateRange}
+        />
       </View>
 
       <View style={styles.formCard}>
@@ -2946,7 +3125,10 @@ function CreateEventScreen({
             <Text style={styles.formLabel}>시작 시간</Text>
             <TextInput
               keyboardType="numbers-and-punctuation"
-              onChangeText={setDailyStartTime}
+              onChangeText={(value) => {
+                setDailyStartTime(value);
+                markDirty();
+              }}
               placeholder="09:00"
               placeholderTextColor={SUBTLE}
               style={styles.input}
@@ -2957,19 +3139,16 @@ function CreateEventScreen({
             <Text style={styles.formLabel}>종료 시간</Text>
             <TextInput
               keyboardType="numbers-and-punctuation"
-              onChangeText={setDailyEndTime}
+              onChangeText={(value) => {
+                setDailyEndTime(value);
+                markDirty();
+              }}
               placeholder="18:00"
               placeholderTextColor={SUBTLE}
               style={styles.input}
               value={dailyEndTime}
             />
           </View>
-        </View>
-        <View style={styles.timePreview}>
-          <View style={styles.timeBlock} />
-          <Text style={styles.timePreviewText}>
-            {dateStart} - {dateEnd} · {dailyStartTime} - {dailyEndTime}
-          </Text>
         </View>
       </View>
 
@@ -2980,7 +3159,10 @@ function CreateEventScreen({
         </View>
         <TextInput
           keyboardType="number-pad"
-          onChangeText={setBufferMinutes}
+          onChangeText={(value) => {
+            setBufferMinutes(value);
+            markDirty();
+          }}
           placeholder="30"
           placeholderTextColor={SUBTLE}
           style={styles.input}
@@ -2989,12 +3171,18 @@ function CreateEventScreen({
         <ToggleRow
           active={bufferBefore}
           label="약속 전"
-          onPress={() => setBufferBefore((value) => !value)}
+          onPress={() => {
+            setBufferBefore((value) => !value);
+            markDirty();
+          }}
         />
         <ToggleRow
           active={bufferAfter}
           label="약속 후"
-          onPress={() => setBufferAfter((value) => !value)}
+          onPress={() => {
+            setBufferAfter((value) => !value);
+            markDirty();
+          }}
         />
       </View>
 
@@ -3011,19 +3199,255 @@ function CreateEventScreen({
   );
 }
 
+function DateRangeCalendarPicker({
+  dateEnd,
+  dateStart,
+  onChange,
+}: {
+  dateEnd: string;
+  dateStart: string;
+  onChange: (dateStart: string, dateEnd: string) => void;
+}) {
+  const todayKey = buildDateKey(new Date());
+  const initialMonth = isDateInputValue(dateStart)
+    ? parseDateValue(dateStart)
+    : new Date();
+  const [dragState, setDragState] = useState<{
+    currentDate: string;
+    startDate: string;
+  } | null>(null);
+  const [gridWidth, setGridWidth] = useState(0);
+  const [isMonthPickerVisible, setIsMonthPickerVisible] = useState(false);
+  const [visibleMonth, setVisibleMonth] = useState(
+    () => new Date(initialMonth.getFullYear(), initialMonth.getMonth(), 1),
+  );
+  const days = useMemo(() => buildMonthDays(visibleMonth), [visibleMonth]);
+  const dateCells = useMemo(
+    () =>
+      days.map((day) =>
+        day
+          ? buildDateKey(
+              new Date(
+                visibleMonth.getFullYear(),
+                visibleMonth.getMonth(),
+                day,
+              ),
+            )
+          : null,
+      ),
+    [days, visibleMonth],
+  );
+  const displayedRange = dragState
+    ? sortDatePair(dragState.startDate, dragState.currentDate)
+    : sortDatePair(dateStart, dateEnd);
+  const cellHeight = 42;
+
+  const getDateFromLocation = useCallback((locationX: number, locationY: number) => {
+    if (gridWidth <= 0) {
+      return null;
+    }
+
+    const columnWidth = gridWidth / 7;
+    const column = clamp(Math.floor(locationX / columnWidth), 0, 6);
+    const row = clamp(Math.floor(locationY / cellHeight), 0, 5);
+    const index = row * 7 + column;
+
+    return dateCells[index] ?? null;
+  }, [dateCells, gridWidth]);
+
+  const commitRange = useCallback((startDate: string, endDate: string) => {
+    const [nextStart, nextEnd] = sortDatePair(startDate, endDate);
+
+    onChange(nextStart, nextEnd);
+  }, [onChange]);
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: () => gridWidth > 0,
+        onStartShouldSetPanResponder: () => gridWidth > 0,
+        onPanResponderGrant: (event) => {
+          const nextDate = getDateFromLocation(
+            event.nativeEvent.locationX,
+            event.nativeEvent.locationY,
+          );
+
+          if (!nextDate) {
+            return;
+          }
+
+          setDragState({ currentDate: nextDate, startDate: nextDate });
+        },
+        onPanResponderMove: (event) => {
+          const nextDate = getDateFromLocation(
+            event.nativeEvent.locationX,
+            event.nativeEvent.locationY,
+          );
+
+          if (!nextDate) {
+            return;
+          }
+
+          setDragState((current) =>
+            current ? { ...current, currentDate: nextDate } : current,
+          );
+        },
+        onPanResponderRelease: () => {
+          setDragState((current) => {
+            if (current) {
+              commitRange(current.startDate, current.currentDate);
+            }
+
+            return null;
+          });
+        },
+        onPanResponderTerminate: () => setDragState(null),
+      }),
+    [commitRange, getDateFromLocation, gridWidth],
+  );
+
+  return (
+    <View style={styles.dateRangePicker}>
+      <View style={styles.monthHeader}>
+        <Pressable
+          accessibilityLabel="이전 달"
+          accessibilityRole="button"
+          onPress={() =>
+            setVisibleMonth((current) => addMonthsToDate(current, -1))
+          }
+          style={({ pressed }) => [
+            styles.monthNavButton,
+            pressed && styles.pressed,
+          ]}
+        >
+          <Text style={styles.monthNavText}>‹</Text>
+        </Pressable>
+        <Pressable
+          accessibilityLabel="연월 선택"
+          accessibilityRole="button"
+          onPress={() => setIsMonthPickerVisible(true)}
+          style={({ pressed }) => [
+            styles.monthTitleButton,
+            pressed && styles.pressed,
+          ]}
+        >
+          <Text style={styles.monthTitle}>{formatMonthTitle(visibleMonth)}</Text>
+        </Pressable>
+        <View style={styles.monthHeaderRight}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => {
+              const today = new Date();
+
+              setVisibleMonth(new Date(today.getFullYear(), today.getMonth(), 1));
+              onChange(todayKey, todayKey);
+            }}
+            style={({ pressed }) => [
+              styles.monthTodayButton,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Text style={styles.monthToday}>오늘</Text>
+          </Pressable>
+          <Pressable
+            accessibilityLabel="다음 달"
+            accessibilityRole="button"
+            onPress={() =>
+              setVisibleMonth((current) => addMonthsToDate(current, 1))
+            }
+            style={({ pressed }) => [
+              styles.monthNavButton,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Text style={styles.monthNavText}>›</Text>
+          </Pressable>
+        </View>
+      </View>
+      <View style={styles.weekRow}>
+        {["일", "월", "화", "수", "목", "금", "토"].map((day, index) => (
+          <Text
+            key={day}
+            style={[
+              styles.weekLabel,
+              index === 0 && styles.sundayText,
+              index === 6 && styles.saturdayText,
+            ]}
+          >
+            {day}
+          </Text>
+        ))}
+      </View>
+      <View
+        onLayout={(event) => setGridWidth(event.nativeEvent.layout.width)}
+        style={[
+          styles.dateRangeGrid,
+          { height: Math.ceil(dateCells.length / 7) * cellHeight },
+        ]}
+        {...panResponder.panHandlers}
+      >
+        {dateCells.map((dayKey, index) => {
+          const weekday = index % 7;
+          const isInRange =
+            dayKey !== null &&
+            displayedRange[0] <= dayKey &&
+            dayKey <= displayedRange[1];
+          const isEndpoint =
+            dayKey !== null &&
+            (dayKey === displayedRange[0] || dayKey === displayedRange[1]);
+          const isToday = dayKey === todayKey;
+
+          return (
+            <View
+              key={dayKey ?? `blank-${index}`}
+              style={[
+                styles.dateRangeDay,
+                { height: cellHeight },
+                isInRange && styles.dateRangeDayActive,
+                isEndpoint && styles.dateRangeDayEndpoint,
+              ]}
+            >
+              {dayKey ? (
+                <Text
+                  style={[
+                    styles.dateRangeDayText,
+                    weekday === 0 && styles.sundayText,
+                    weekday === 6 && styles.saturdayText,
+                    isEndpoint && styles.dateRangeDayTextActive,
+                  ]}
+                >
+                  {Number(dayKey.slice(-2))}
+                </Text>
+              ) : null}
+              {isToday ? <View style={styles.dateRangeTodayDot} /> : null}
+            </View>
+          );
+        })}
+      </View>
+      <Text style={styles.dateRangeHint}>
+        날짜를 누르거나 드래그해서 기간을 선택할 수 있어요.
+      </Text>
+      <MonthPickerModal
+        key={buildMonthKey(visibleMonth)}
+        monthDate={visibleMonth}
+        onClose={() => setIsMonthPickerVisible(false)}
+        onSelectMonth={(nextMonth) => {
+          setVisibleMonth(nextMonth);
+          setIsMonthPickerVisible(false);
+        }}
+        visible={isMonthPickerVisible}
+      />
+    </View>
+  );
+}
+
 function AccessScreen({
-  accessPreview,
   apiError,
   isLoading,
-  onOpenEventReservation,
-  onOpenReservationManagement,
   onResolveCode,
 }: {
-  accessPreview: AccessPreview | null;
   apiError: string | null;
   isLoading: boolean;
-  onOpenEventReservation: (eventCode: string) => void;
-  onOpenReservationManagement: (accessCode: string) => void;
   onResolveCode: (code: string) => Promise<void>;
 }) {
   const [code, setCode] = useState("");
@@ -3051,44 +3475,6 @@ function AccessScreen({
           loading={isLoading}
           onPress={() => onResolveCode(code)}
         />
-        {accessPreview ? (
-          <View style={styles.previewCard}>
-            <View style={styles.scheduleTop}>
-              <View style={styles.previewTextBlock}>
-                <Text style={styles.previewMeta}>
-                  {accessPreview.kind === "event" ? "이벤트" : "예약 관리"}
-                  {accessPreview.meta ? ` · ${accessPreview.meta}` : ""}
-                </Text>
-                <Text style={styles.previewTitle}>{accessPreview.title}</Text>
-              </View>
-              <Text style={styles.eventCode}>{accessPreview.code}</Text>
-            </View>
-            <Text style={styles.previewSubtitle}>{accessPreview.subtitle}</Text>
-            {accessPreview.kind === "event" ? (
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => onOpenEventReservation(accessPreview.code)}
-                style={({ pressed }) => [
-                  styles.previewAction,
-                  pressed && styles.pressed,
-                ]}
-              >
-                <Text style={styles.previewActionText}>예약하기</Text>
-              </Pressable>
-            ) : accessPreview.kind === "reservation" ? (
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => onOpenReservationManagement(accessPreview.code)}
-                style={({ pressed }) => [
-                  styles.previewAction,
-                  pressed && styles.pressed,
-                ]}
-              >
-                <Text style={styles.previewActionText}>관리하기</Text>
-              </Pressable>
-            ) : null}
-          </View>
-        ) : null}
       </View>
     </ScrollView>
   );
@@ -3099,6 +3485,8 @@ function EventReserveScreen({
   eventCode,
   isLoading,
   onCreateReservation,
+  onOpenReservationManagement,
+  onSetUnsavedChanges,
   session,
 }: {
   apiError: string | null;
@@ -3107,6 +3495,8 @@ function EventReserveScreen({
   onCreateReservation: (
     payload: CreateReservationPayload,
   ) => Promise<MobileCreatedReservation | null>;
+  onOpenReservationManagement: (accessCode: string) => void;
+  onSetUnsavedChanges: (hasChanges: boolean) => void;
   session: MobileSession | null;
 }) {
   const [createdReservation, setCreatedReservation] =
@@ -3143,6 +3533,7 @@ function EventReserveScreen({
 
         if (isMounted) {
           setEventDetail(detail);
+          onSetUnsavedChanges(false);
           setSelectedDate(
             detail.activeDates.includes(buildDateKey(new Date()))
               ? buildDateKey(new Date())
@@ -3169,7 +3560,7 @@ function EventReserveScreen({
     return () => {
       isMounted = false;
     };
-  }, [eventCode]);
+  }, [eventCode, onSetUnsavedChanges]);
 
   if (!eventCode) {
     return (
@@ -3282,6 +3673,10 @@ function EventReserveScreen({
 
     if (reservation) {
       setCreatedReservation(reservation);
+      onSetUnsavedChanges(false);
+      onOpenReservationManagement(
+        reservation.reservation.reservation_access_code,
+      );
     }
   }
 
@@ -3340,7 +3735,10 @@ function EventReserveScreen({
             <Text style={styles.formLabel}>총 인원수</Text>
             <TextInput
               keyboardType="number-pad"
-              onChangeText={setHeadcount}
+              onChangeText={(value) => {
+                setHeadcount(value);
+                onSetUnsavedChanges(true);
+              }}
               placeholder="1"
               placeholderTextColor={SUBTLE}
               style={styles.input}
@@ -3349,7 +3747,10 @@ function EventReserveScreen({
             <Text style={styles.formLabel}>참여자 이름</Text>
             <TextInput
               multiline
-              onChangeText={setParticipantNames}
+              onChangeText={(value) => {
+                setParticipantNames(value);
+                onSetUnsavedChanges(true);
+              }}
               placeholder="쉼표나 줄바꿈으로 이름을 입력"
               placeholderTextColor={SUBTLE}
               style={[styles.input, styles.textArea]}
@@ -3357,7 +3758,10 @@ function EventReserveScreen({
             />
             <Text style={styles.formLabel}>관리 비밀번호 선택</Text>
             <TextInput
-              onChangeText={setPassword}
+              onChangeText={(value) => {
+                setPassword(value);
+                onSetUnsavedChanges(true);
+              }}
               placeholder="비워두면 코드만으로 관리"
               placeholderTextColor={SUBTLE}
               secureTextEntry
@@ -3446,11 +3850,12 @@ function EventReserveScreen({
                   disabled={isLoading || isEventLoading}
                   inactiveLabel="후보 해제"
                   isSelected={(cell) => isRangeInCandidateSlots(selectedSlots, cell)}
-                  onCommit={(range, shouldSelect) =>
+                  onCommit={(range, shouldSelect) => {
+                    onSetUnsavedChanges(true);
                     setSelectedSlots((current) =>
                       setCandidateSlotRange(current, range, shouldSelect),
-                    )
-                  }
+                    );
+                  }}
                   selectedLabel="후보 추가"
                   timelineStart={startMinute}
                 />
@@ -3485,7 +3890,10 @@ function EventReserveScreen({
           {selectedSlots.length > 0 ? (
             <CandidateSlotList
               meta="행을 드래그해서 순서 변경"
-              onReorder={setSelectedSlots}
+              onReorder={(nextSlots) => {
+                setSelectedSlots(nextSlots);
+                onSetUnsavedChanges(true);
+              }}
               slots={selectedSlots}
               title="후보 목록"
             />
@@ -3508,6 +3916,7 @@ function ReservationManageScreen({
   apiError,
   isLoading,
   onCancelReservation,
+  onSetUnsavedChanges,
   onUpdateReservation,
   session,
 }: {
@@ -3518,6 +3927,7 @@ function ReservationManageScreen({
     accessCode: string,
     password?: string | null,
   ) => Promise<MobileReservationManagement | null>;
+  onSetUnsavedChanges: (hasChanges: boolean) => void;
   onUpdateReservation: (
     accessCode: string,
     payload: {
@@ -3562,6 +3972,7 @@ function ReservationManageScreen({
 
         if (isMounted) {
           hydrateReservationManagement(management);
+          onSetUnsavedChanges(false);
         }
       } catch (error) {
         if (isMounted) {
@@ -3606,7 +4017,7 @@ function ReservationManageScreen({
     return () => {
       isMounted = false;
     };
-  }, [accessCode, session?.accessToken]);
+  }, [accessCode, onSetUnsavedChanges, session?.accessToken]);
 
   if (!accessCode) {
     return (
@@ -3731,6 +4142,7 @@ function ReservationManageScreen({
     if (nextDetail) {
       setDetail(nextDetail);
       setNotice("예약 정보를 저장했습니다.");
+      onSetUnsavedChanges(false);
     }
   }
 
@@ -3749,6 +4161,7 @@ function ReservationManageScreen({
     if (nextDetail) {
       setDetail(nextDetail);
       setNotice("예약을 취소했습니다.");
+      onSetUnsavedChanges(false);
     }
   }
 
@@ -3795,7 +4208,10 @@ function ReservationManageScreen({
             <Text style={styles.formLabel}>총 인원수</Text>
             <TextInput
               keyboardType="number-pad"
-              onChangeText={setHeadcount}
+              onChangeText={(value) => {
+                setHeadcount(value);
+                onSetUnsavedChanges(true);
+              }}
               placeholder="1"
               placeholderTextColor={SUBTLE}
               style={styles.input}
@@ -3804,7 +4220,10 @@ function ReservationManageScreen({
             <Text style={styles.formLabel}>참여자 이름</Text>
             <TextInput
               multiline
-              onChangeText={setParticipantNames}
+              onChangeText={(value) => {
+                setParticipantNames(value);
+                onSetUnsavedChanges(true);
+              }}
               placeholder="쉼표나 줄바꿈으로 이름을 입력"
               placeholderTextColor={SUBTLE}
               style={[styles.input, styles.textArea]}
@@ -3814,7 +4233,10 @@ function ReservationManageScreen({
               <>
                 <Text style={styles.formLabel}>예약 비밀번호</Text>
                 <TextInput
-                  onChangeText={setPassword}
+                  onChangeText={(value) => {
+                    setPassword(value);
+                    onSetUnsavedChanges(true);
+                  }}
                   placeholder="예약 비밀번호"
                   placeholderTextColor={SUBTLE}
                   secureTextEntry
@@ -3927,11 +4349,12 @@ function ReservationManageScreen({
                   disabled={isLoading || isDetailLoading}
                   inactiveLabel="후보 해제"
                   isSelected={(cell) => isRangeInCandidateSlots(selectedSlots, cell)}
-                  onCommit={(range, shouldSelect) =>
+                  onCommit={(range, shouldSelect) => {
+                    onSetUnsavedChanges(true);
                     setSelectedSlots((current) =>
                       setCandidateSlotRange(current, range, shouldSelect),
-                    )
-                  }
+                    );
+                  }}
                   selectedLabel="후보 추가"
                   timelineStart={startMinute}
                 />
@@ -3966,7 +4389,10 @@ function ReservationManageScreen({
           {selectedSlots.length > 0 ? (
             <CandidateSlotList
               meta="행을 드래그해서 순서 변경"
-              onReorder={setSelectedSlots}
+              onReorder={(nextSlots) => {
+                setSelectedSlots(nextSlots);
+                onSetUnsavedChanges(true);
+              }}
               slots={selectedSlots}
               title="대기 후보"
             />
@@ -3974,7 +4400,7 @@ function ReservationManageScreen({
 
           <PrimaryAction
             disabled={isLoading || isDetailLoading}
-            label="예약 정보 저장"
+            label="예약 업데이트"
             loading={isLoading}
             onPress={handleSave}
           />
@@ -4205,6 +4631,70 @@ function EmptyCard({
       <Text style={styles.emptyTitle}>{title}</Text>
       <Text style={styles.emptyDetail}>{detail}</Text>
     </View>
+  );
+}
+
+function ConfirmDialog({
+  confirmLabel,
+  isDanger = false,
+  message,
+  onCancel,
+  onConfirm,
+  title,
+  visible,
+}: {
+  confirmLabel: string;
+  isDanger?: boolean;
+  message: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+  title: string;
+  visible: boolean;
+}) {
+  return (
+    <Modal
+      animationType="fade"
+      onRequestClose={onCancel}
+      transparent
+      visible={visible}
+    >
+      <Pressable
+        accessibilityRole="button"
+        onPress={onCancel}
+        style={styles.modalBackdrop}
+      >
+        <Pressable
+          onPress={(event) => event.stopPropagation()}
+          style={styles.confirmPanel}
+        >
+          <Text style={styles.confirmTitle}>{title}</Text>
+          <Text style={styles.confirmMessage}>{message}</Text>
+          <View style={styles.confirmActions}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={onCancel}
+              style={({ pressed }) => [
+                styles.confirmCancelButton,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.confirmCancelText}>취소</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={onConfirm}
+              style={({ pressed }) => [
+                styles.confirmButton,
+                isDanger && styles.confirmDangerButton,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.confirmButtonText}>{confirmLabel}</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -5706,12 +6196,22 @@ function buildDateList(dateStart: string, dateEnd: string) {
   return dates;
 }
 
+function sortDatePair(left: string, right: string): [string, string] {
+  if (!isDateInputValue(left) || !isDateInputValue(right)) {
+    const fallback = buildDateKey(new Date());
+
+    return [fallback, fallback];
+  }
+
+  return left <= right ? [left, right] : [right, left];
+}
+
 function isDateInputValue(value: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value));
 }
 
 function isTimeInputValue(value: string) {
-  return /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+  return /^(([01]\d|2[0-3]):[0-5]\d|24:00)$/.test(value);
 }
 
 function toDateInputValue(date: Date) {
@@ -5870,6 +6370,111 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     height: 54,
     paddingHorizontal: 14,
+  },
+  confirmActions: {
+    flexDirection: "row",
+    gap: 10,
+    justifyContent: "flex-end",
+    marginTop: 18,
+  },
+  confirmButton: {
+    alignItems: "center",
+    backgroundColor: PRIMARY,
+    borderRadius: 8,
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: 16,
+  },
+  confirmButtonText: {
+    color: BACKGROUND,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  confirmCancelButton: {
+    alignItems: "center",
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: 16,
+  },
+  confirmCancelText: {
+    color: PRIMARY,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  confirmDangerButton: {
+    backgroundColor: "#B95050",
+  },
+  confirmMessage: {
+    color: MUTED,
+    fontSize: 14,
+    fontWeight: "700",
+    lineHeight: 20,
+    marginTop: 8,
+  },
+  confirmPanel: {
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 10,
+    borderWidth: 1,
+    padding: 18,
+    width: "100%",
+  },
+  confirmTitle: {
+    color: INK,
+    fontFamily: serifFont,
+    fontSize: 22,
+    fontWeight: "700",
+  },
+  dateRangeDay: {
+    alignItems: "center",
+    borderRadius: 8,
+    justifyContent: "center",
+    position: "relative",
+    width: "14.285%",
+  },
+  dateRangeDayActive: {
+    backgroundColor: PRIMARY_SOFT,
+  },
+  dateRangeDayEndpoint: {
+    backgroundColor: PRIMARY,
+  },
+  dateRangeDayText: {
+    color: INK,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  dateRangeDayTextActive: {
+    color: BACKGROUND,
+  },
+  dateRangeGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+  },
+  dateRangeHint: {
+    color: MUTED,
+    fontSize: 12,
+    fontWeight: "700",
+    lineHeight: 18,
+  },
+  dateRangePicker: {
+    backgroundColor: "#F9FAFB",
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 10,
+    padding: 12,
+  },
+  dateRangeTodayDot: {
+    backgroundColor: PRIMARY,
+    borderRadius: 3,
+    bottom: 5,
+    height: 5,
+    position: "absolute",
+    width: 5,
   },
   dateChip: {
     borderColor: BORDER,
@@ -6421,6 +7026,26 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     gap: 12,
     padding: 16,
+  },
+  manageHeroActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  manageDeleteButton: {
+    alignItems: "center",
+    backgroundColor: "#FFF7F7",
+    borderColor: "#F1C5C5",
+    borderRadius: 999,
+    borderWidth: 1,
+    minHeight: 34,
+    justifyContent: "center",
+    paddingHorizontal: 12,
+  },
+  manageDeleteButtonText: {
+    color: "#B95050",
+    fontSize: 12,
+    fontWeight: "900",
   },
   manageMeta: {
     color: MUTED,

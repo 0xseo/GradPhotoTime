@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { actionError, actionOk, type ActionResult } from "@/lib/actions/result";
+import { deleteEventCascade } from "@/lib/events/delete-event";
 import { getSlotDisplayRange } from "@/lib/reservations/slots";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import type { Tables } from "@/lib/supabase/database.types";
@@ -134,6 +135,53 @@ export async function createEvent(
     revalidatePath("/");
 
     return actionOk({ event: mapPublicEvent(data) });
+  } catch (error) {
+    return actionError(getErrorMessage(error));
+  }
+}
+
+export type DeleteEventInput = {
+  eventId: string;
+};
+
+export type DeleteEventData = {
+  eventCode: string;
+  eventId: string;
+};
+
+export async function deleteEvent(
+  input: DeleteEventInput,
+): Promise<ActionResult<DeleteEventData>> {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      return actionError("로그인한 Host만 이벤트를 삭제할 수 있습니다.");
+    }
+
+    const eventId = requireUuid(input.eventId, "eventId");
+    const admin = createSupabaseAdminClient();
+    const { data: event, error } = await admin
+      .from("events")
+      .select("id,event_code,host_id")
+      .eq("id", eventId)
+      .single();
+
+    if (error || !event || event.host_id !== user.id) {
+      return actionError("삭제할 이벤트를 찾을 수 없습니다.");
+    }
+
+    await deleteEventCascade(admin, event.id);
+
+    revalidatePath("/");
+    revalidatePath(`/host/events/${event.id}`);
+    revalidatePath(`/event/${event.event_code}`);
+
+    return actionOk({ eventCode: event.event_code, eventId: event.id });
   } catch (error) {
     return actionError(getErrorMessage(error));
   }

@@ -1023,7 +1023,7 @@ function ReservationReviewItem({
           </div>
 
           <div className="space-y-2">
-            {reservation.slots.map((slot) => {
+            {reservation.slots.map((slot, slotIndex) => {
               const approveKey = `${reservation.id}:${slot.id}:APPROVED`;
               const pendingKey = `${reservation.id}:${slot.id}:PENDING`;
               const nextStatus = slot.is_confirmed ? "PENDING" : "APPROVED";
@@ -1034,7 +1034,7 @@ function ReservationReviewItem({
                   key={slot.id}
                 >
                   <span className="rounded-full border border-border bg-background px-2 py-1 font-mono text-[11px] text-primary">
-                    후보 {slot.priority_order}
+                    후보 {slotIndex + 1}
                   </span>
                   <span className="min-w-0 truncate rounded-md border border-border bg-muted px-2 py-2 font-mono text-xs text-foreground">
                     {formatTimeRange({

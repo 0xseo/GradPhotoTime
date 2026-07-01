@@ -1,4 +1,5 @@
 import { getSlotDisplayRange } from "@/lib/reservations/slots";
+import { normalizeReservationSlotPriorities } from "@/lib/reservations/priority";
 import { getCandidateSlotBlockReason } from "@/lib/reservations/rules";
 import { mobileError, mobileOk, readJsonBody } from "@/lib/mobile/api-response";
 import { getMobileUserFromRequest } from "@/lib/mobile/auth";
@@ -97,6 +98,8 @@ export async function POST(request: Request) {
         return mobileError(reservationError.message);
       }
 
+      await normalizeReservationSlotPriorities(admin, reservation.id);
+
       return mobileOk({ eventCode: event.event_code, reservationId });
     }
 
@@ -131,6 +134,8 @@ export async function POST(request: Request) {
     if (reservationError) {
       return mobileError(reservationError.message);
     }
+
+    await normalizeReservationSlotPriorities(admin, reservation.id);
 
     return mobileOk({ eventCode: event.event_code, reservationId });
   } catch (error) {

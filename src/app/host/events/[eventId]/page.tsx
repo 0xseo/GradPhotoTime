@@ -1,5 +1,6 @@
 import { CalendarShell } from "@/components/calendar/calendar-shell";
 import { EventDateEditButton } from "@/components/host/event-date-edit-button";
+import { EventDeleteButton } from "@/components/host/event-delete-button";
 import { EventShareButton } from "@/components/host/event-share-button";
 import { HostDashboardShell } from "@/components/host/host-dashboard-shell";
 import {
@@ -87,6 +88,7 @@ export default async function HostEventPage({ params }: HostEventPageProps) {
             event={event}
           />
           <EventShareButton eventCode={event.event_code} />
+          <EventDeleteButton eventId={event.id} eventTitle={event.title} />
         </div>
       }
       eyebrow="Host"

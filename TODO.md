@@ -17,12 +17,14 @@
 - Step 4: Server Actions for events, time blocks, event code lookup, reservations, and Host approval.
 - Step 5: Mobile-first Host and Guest UI implementation.
 - Event creation availability setup: Host selects date range, day bounds, and initial available time blocks in the drag grid.
-- Mobile native app: auth/session persistence, dashboard data, calendar-to-detail navigation, event creation, code lookup, Host event management, draft-save Host availability editing, Host review actions, drag-based Guest event reservation creation with priority reordering, reservation-code management, and month/date navigation are implemented.
+- Web/Server: Host event deletion is implemented with cascading cleanup of reservations, slots, participants, time blocks, active dates, and buffer overrides.
+- Mobile native app: auth/session persistence, dashboard data, calendar-to-detail navigation, event creation with synced calendar/date inputs, immediate code routing, Host event management, event deletion, draft-save Host availability editing, Host review actions, drag-based Guest event reservation creation with priority reordering, reservation-code management with unsaved-change warnings, and month/date navigation are implemented.
 
 ## Next
 
 - Add deployment configuration and Supabase production redirect URLs.
 - Mobile Host management: add confirmed-slot resize/move and buffer add/remove/resize.
+- Mobile Host management: implement native date/default-time editing instead of web handoff if app-only management becomes required.
 - Mobile deep links: when production domain/app IDs are ready, configure iOS Universal Links and Android App Links so QR/event links open the app when installed and web otherwise.
 - QR sharing: generate event QR codes after deep-link targets are finalized.
 - Add mobile API tests for reservation creation and Host availability editing.
