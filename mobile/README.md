@@ -18,6 +18,21 @@ npm run android:local
 
 Use `npm run ios:local` for the iOS simulator.
 
+For the Android emulator, `npm run android` is also local/offline and avoids Expo server manifest lookup errors such as `UnexpectedServerData: No returned query result`.
+
+For a physical phone running Expo Go, use one of these instead:
+
+```bash
+npm run android:lan
+npm run android:tunnel
+```
+
+If port 8081 is already held by an old Metro process, stop the previous terminal with `Ctrl+C` or run on another port:
+
+```bash
+npm run android -- --port 8082
+```
+
 By default the app calls `https://grad-photo-time.vercel.app`. For local API testing:
 
 ```bash

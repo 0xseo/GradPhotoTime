@@ -5,8 +5,13 @@
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
+    "start:lan": "expo start --lan",
+    "start:local": "EXPO_OFFLINE=1 expo start --localhost -c",
+    "start:tunnel": "expo start --tunnel",
+    "android": "EXPO_OFFLINE=1 expo start --android --localhost -c",
+    "android:lan": "expo start --android --lan",
     "android:local": "EXPO_OFFLINE=1 expo start --android --localhost -c",
+    "android:tunnel": "expo start --android --tunnel",
     "ios": "expo start --ios",
     "ios:local": "EXPO_OFFLINE=1 expo start --ios --localhost -c",
     "web": "expo start --web"
