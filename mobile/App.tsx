@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Modal,
+  PanResponder,
   Platform,
   Pressable,
   RefreshControl,
@@ -125,6 +127,16 @@ type MobileTimeBlockDraft = {
   note?: string | null;
   startAt: string;
   type: "AVAILABLE" | "BLOCKED";
+};
+type MobileTimelineCell = {
+  endAt: string;
+  endMinute: number;
+  startAt: string;
+  startMinute: number;
+};
+type MobileTimeRange = {
+  endAt: string;
+  startAt: string;
 };
 type MobileDashboardParticipant = {
   created_at?: string;
@@ -272,7 +284,7 @@ type RenderContext = {
   onSaveTimeBlocks: (
     eventId: string,
     blocks: MobileTimeBlockDraft[],
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   onSignOut: () => Promise<void>;
   onSignIn: (email: string, password: string) => Promise<void>;
   onSignUp: (
@@ -1000,7 +1012,7 @@ function NativeShell() {
   ) {
     if (!session?.accessToken) {
       setApiError("로그인이 필요합니다.");
-      return;
+      return false;
     }
 
     setApiError(null);
@@ -1026,10 +1038,12 @@ function NativeShell() {
       setDashboard(nextDashboard);
       setSession(dashboardSession);
       await saveStoredSession(dashboardSession);
+      return true;
     } catch (error) {
       setApiError(
         error instanceof Error ? error.message : "가능 시간을 저장하지 못했습니다.",
       );
+      return false;
     } finally {
       setIsApiLoading(false);
     }
@@ -1583,21 +1597,26 @@ function MonthCard({
   dashboard: MobileDashboardData | null;
 }) {
   const today = useMemo(() => new Date(), []);
+  const [visibleMonth, setVisibleMonth] = useState(
+    () => new Date(today.getFullYear(), today.getMonth(), 1),
+  );
+  const [isMonthPickerVisible, setIsMonthPickerVisible] = useState(false);
   const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null);
-  const days = useMemo(() => buildMonthDays(today), [today]);
+  const days = useMemo(() => buildMonthDays(visibleMonth), [visibleMonth]);
   const monthItems = useMemo(
     () => (dashboard ? buildSchedulesFromDashboard(dashboard) : schedules),
     [dashboard],
   );
   const schedulesByDate = useMemo(
-    () => buildSchedulesByDate(monthItems, today),
-    [monthItems, today],
+    () => buildSchedulesByDate(monthItems, visibleMonth),
+    [monthItems, visibleMonth],
   );
   const markers = useMemo(
-    () => buildMonthMarkers(dashboard, today),
-    [dashboard, today],
+    () => buildMonthMarkers(dashboard, visibleMonth),
+    [dashboard, visibleMonth],
   );
-  const monthTitle = `${today.getFullYear()}년 ${today.getMonth() + 1}월`;
+  const monthTitle = formatMonthTitle(visibleMonth);
+  const todayKey = buildDateKey(today);
   const selectedItems = selectedDateKey
     ? schedulesByDate.get(selectedDateKey) ?? []
     : [];
@@ -1605,8 +1624,60 @@ function MonthCard({
   return (
     <View style={styles.monthCard}>
       <View style={styles.monthHeader}>
-        <Text style={styles.monthTitle}>{monthTitle}</Text>
-        <Text style={styles.monthToday}>오늘</Text>
+        <Pressable
+          accessibilityLabel="이전 달"
+          accessibilityRole="button"
+          onPress={() =>
+            setVisibleMonth((current) => addMonthsToDate(current, -1))
+          }
+          style={({ pressed }) => [
+            styles.monthNavButton,
+            pressed && styles.pressed,
+          ]}
+        >
+          <Text style={styles.monthNavText}>‹</Text>
+        </Pressable>
+        <Pressable
+          accessibilityLabel="연월 선택"
+          accessibilityRole="button"
+          onPress={() => setIsMonthPickerVisible(true)}
+          style={({ pressed }) => [
+            styles.monthTitleButton,
+            pressed && styles.pressed,
+          ]}
+        >
+          <Text style={styles.monthTitle}>{monthTitle}</Text>
+        </Pressable>
+        <View style={styles.monthHeaderRight}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => {
+              setVisibleMonth(
+                new Date(today.getFullYear(), today.getMonth(), 1),
+              );
+              setSelectedDateKey(todayKey);
+            }}
+            style={({ pressed }) => [
+              styles.monthTodayButton,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Text style={styles.monthToday}>오늘</Text>
+          </Pressable>
+          <Pressable
+            accessibilityLabel="다음 달"
+            accessibilityRole="button"
+            onPress={() =>
+              setVisibleMonth((current) => addMonthsToDate(current, 1))
+            }
+            style={({ pressed }) => [
+              styles.monthNavButton,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Text style={styles.monthNavText}>›</Text>
+          </Pressable>
+        </View>
       </View>
       <View style={styles.weekRow}>
         {["일", "월", "화", "수", "목", "금", "토"].map((day, index) => (
@@ -1624,16 +1695,17 @@ function MonthCard({
       </View>
       <View style={styles.monthGrid}>
         {days.map((day, index) => {
-          const isToday =
-            day === today.getDate() &&
-            today.getMonth() === new Date().getMonth() &&
-            today.getFullYear() === new Date().getFullYear();
           const dayKey =
             day === null
               ? ""
               : buildDateKey(
-                  new Date(today.getFullYear(), today.getMonth(), day),
+                  new Date(
+                    visibleMonth.getFullYear(),
+                    visibleMonth.getMonth(),
+                    day,
+                  ),
                 );
+          const isToday = dayKey === todayKey;
           const isSelected = selectedDateKey === dayKey;
           const hasApproved = dashboard
             ? markers.approved.has(dayKey)
@@ -1714,6 +1786,16 @@ function MonthCard({
             ))}
         </View>
       ) : null}
+      <MonthPickerModal
+        key={buildMonthKey(visibleMonth)}
+        monthDate={visibleMonth}
+        onClose={() => setIsMonthPickerVisible(false)}
+        onSelectMonth={(nextMonth) => {
+          setVisibleMonth(nextMonth);
+          setIsMonthPickerVisible(false);
+        }}
+        visible={isMonthPickerVisible}
+      />
     </View>
   );
 }
@@ -1826,7 +1908,7 @@ function HostEventManageScreen({
   onSaveTimeBlocks: (
     eventId: string,
     blocks: MobileTimeBlockDraft[],
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   session: MobileSession | null;
 }) {
   const confirmedSlots = useMemo(
@@ -1898,6 +1980,9 @@ function HostEventManageScreen({
           <HostEventCalendar
             event={event}
             isSaving={isLoading}
+            key={`${event.id}-${event.timeBlocks
+              .map((block) => `${block.id}:${block.start_at}:${block.end_at}`)
+              .join("|")}`}
             onSaveTimeBlocks={onSaveTimeBlocks}
           />
 
@@ -1952,9 +2037,16 @@ function HostEventCalendar({
   onSaveTimeBlocks: (
     eventId: string,
     blocks: MobileTimeBlockDraft[],
-  ) => Promise<void>;
+  ) => Promise<boolean>;
 }) {
   const [isEditingAvailability, setIsEditingAvailability] = useState(false);
+  const [draftBlocks, setDraftBlocks] = useState<MobileTimeBlockDraft[]>(() =>
+    createMobileTimeBlockDrafts(event.timeBlocks),
+  );
+  const committedBlocksKey = useMemo(
+    () => buildMobileTimeBlockDraftKey(createMobileTimeBlockDrafts(event.timeBlocks)),
+    [event.timeBlocks],
+  );
   const eventDates = useMemo(
     () => buildDateList(event.date_start, event.date_end),
     [event.date_end, event.date_start],
@@ -1967,6 +2059,16 @@ function HostEventCalendar({
   const currentDate = eventDates.includes(selectedDate)
     ? selectedDate
     : initialDate;
+  const committedBlocks = useMemo(
+    () => createMobileTimeBlockDrafts(event.timeBlocks),
+    [event.timeBlocks],
+  );
+  const displayedBlocks = isEditingAvailability ? draftBlocks : committedBlocks;
+  const draftBlocksKey = useMemo(
+    () => buildMobileTimeBlockDraftKey(draftBlocks),
+    [draftBlocks],
+  );
+  const hasAvailabilityChanges = draftBlocksKey !== committedBlocksKey;
   const allSlots = useMemo(
     () => sortSlots([...event.confirmedSlots, ...event.pendingSlots]),
     [event.confirmedSlots, event.pendingSlots],
@@ -2007,14 +2109,14 @@ function HostEventCalendar({
   );
   const visibleAvailabilityBlocks = useMemo(
     () =>
-      event.timeBlocks
+      displayedBlocks
         .filter((block) => block.type === "AVAILABLE")
         .map((block) => ({
           block,
           overlap: getRangeOverlapMinutes(
             {
-              endAt: block.end_at,
-              startAt: block.start_at,
+              endAt: block.endAt,
+              startAt: block.startAt,
             },
             currentDate,
           ),
@@ -2023,11 +2125,11 @@ function HostEventCalendar({
           (
             item,
           ): item is {
-            block: MobileTimeBlock;
+            block: MobileTimeBlockDraft;
             overlap: { end: number; start: number };
           } => item.overlap !== null,
         ),
-    [currentDate, event.timeBlocks],
+    [currentDate, displayedBlocks],
   );
   const timelineHeight = Math.max(
     ((timelineBounds.end - timelineBounds.start) / 60) *
@@ -2035,17 +2137,37 @@ function HostEventCalendar({
     MANAGE_TIMELINE_HOUR_HEIGHT,
   );
 
-  async function handleToggleAvailability(range: {
-    endAt: string;
-    startAt: string;
-  }) {
+  function handleStartAvailabilityEdit() {
+    setDraftBlocks(committedBlocks);
+    setIsEditingAvailability(true);
+  }
+
+  function handleCancelAvailabilityEdit() {
+    setDraftBlocks(committedBlocks);
+    setIsEditingAvailability(false);
+  }
+
+  async function handleSaveAvailability() {
     if (isSaving) {
       return;
     }
 
-    await onSaveTimeBlocks(
+    const didSave = await onSaveTimeBlocks(
       event.id,
-      toggleMobileAvailabilityBlocks(event.timeBlocks, range),
+      mergeMobileTimeBlockDrafts(draftBlocks),
+    );
+
+    if (didSave) {
+      setIsEditingAvailability(false);
+    }
+  }
+
+  function handleDragAvailabilityRange(
+    range: MobileTimeRange,
+    shouldBeAvailable: boolean,
+  ) {
+    setDraftBlocks((current) =>
+      setMobileAvailabilityDraftRange(current, range, shouldBeAvailable),
     );
   }
 
@@ -2060,86 +2182,71 @@ function HostEventCalendar({
           <Text style={styles.manageCalendarCount}>
             일정 {visibleSlots.length} · 가능 {visibleAvailabilityBlocks.length}
           </Text>
-          <Pressable
-            accessibilityRole="button"
-            disabled={isSaving}
-            onPress={() => setIsEditingAvailability((current) => !current)}
-            style={({ pressed }) => [
-              styles.manageEditButton,
-              isEditingAvailability && styles.manageEditButtonActive,
-              pressed && !isSaving && styles.pressed,
-              isSaving && styles.primaryButtonDisabled,
-            ]}
-          >
-            {isSaving ? (
-              <ActivityIndicator
-                color={isEditingAvailability ? BACKGROUND : PRIMARY}
-                size="small"
-              />
-            ) : (
-              <Text
-                style={[
-                  styles.manageEditButtonText,
-                  isEditingAvailability && styles.manageEditButtonTextActive,
+          {isEditingAvailability ? (
+            <View style={styles.manageEditActionRow}>
+              <Pressable
+                accessibilityRole="button"
+                disabled={isSaving}
+                onPress={handleCancelAvailabilityEdit}
+                style={({ pressed }) => [
+                  styles.manageEditButton,
+                  pressed && !isSaving && styles.pressed,
+                  isSaving && styles.primaryButtonDisabled,
                 ]}
               >
-                {isEditingAvailability ? "편집 중" : "가능 시간 편집"}
-              </Text>
-            )}
-          </Pressable>
+                <Text style={styles.manageEditButtonText}>취소</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                disabled={isSaving || !hasAvailabilityChanges}
+                onPress={handleSaveAvailability}
+                style={({ pressed }) => [
+                  styles.manageEditButton,
+                  styles.manageEditButtonActive,
+                  (isSaving || !hasAvailabilityChanges) &&
+                    styles.primaryButtonDisabled,
+                  pressed &&
+                    !isSaving &&
+                    hasAvailabilityChanges &&
+                    styles.pressed,
+                ]}
+              >
+                {isSaving ? (
+                  <ActivityIndicator color={BACKGROUND} size="small" />
+                ) : (
+                  <Text
+                    style={[
+                      styles.manageEditButtonText,
+                      styles.manageEditButtonTextActive,
+                    ]}
+                  >
+                    저장
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable
+              accessibilityRole="button"
+              disabled={isSaving}
+              onPress={handleStartAvailabilityEdit}
+              style={({ pressed }) => [
+                styles.manageEditButton,
+                pressed && !isSaving && styles.pressed,
+                isSaving && styles.primaryButtonDisabled,
+              ]}
+            >
+              <Text style={styles.manageEditButtonText}>가능 시간 편집</Text>
+            </Pressable>
+          )}
         </View>
       </View>
 
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.manageDateScroller}
-      >
-        <View style={styles.manageDateChipRow}>
-          {eventDates.map((dateKey) => {
-            const parsedDate = parseDateValue(dateKey);
-            const isSelected = dateKey === currentDate;
-            const isToday = dateKey === todayKey;
-            const weekday = parsedDate.getDay();
-
-            return (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ selected: isSelected }}
-                key={dateKey}
-                onPress={() => setSelectedDate(dateKey)}
-                style={({ pressed }) => [
-                  styles.manageDateChip,
-                  isSelected && styles.manageDateChipActive,
-                  isToday && !isSelected && styles.manageDateChipToday,
-                  pressed && styles.pressed,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.manageDateChipDate,
-                    weekday === 0 && styles.sundayText,
-                    weekday === 6 && styles.saturdayText,
-                    isSelected && styles.manageDateChipDateActive,
-                  ]}
-                >
-                  {formatShortDate(dateKey)}
-                </Text>
-                <Text
-                  style={[
-                    styles.manageDateChipWeekday,
-                    weekday === 0 && styles.sundayText,
-                    weekday === 6 && styles.saturdayText,
-                    isSelected && styles.manageDateChipWeekdayActive,
-                  ]}
-                >
-                  {formatWeekday(dateKey)}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      </ScrollView>
+      <DateStripNavigator
+        dates={eventDates}
+        onSelectDate={setSelectedDate}
+        selectedDate={currentDate}
+      />
 
       <View style={styles.manageTimeline}>
         <View style={styles.manageTimelineTimeColumn}>
@@ -2171,10 +2278,7 @@ function HostEventCalendar({
           ))}
           {isEditingAvailability
             ? availabilityCells.map((cell) => {
-                const isAvailable = isRangeInAvailableBlocks(
-                  event.timeBlocks,
-                  cell,
-                );
+                const isAvailable = isRangeInAvailableDrafts(draftBlocks, cell);
                 const top =
                   ((cell.startMinute - timelineBounds.start) / 60) *
                   MANAGE_TIMELINE_HOUR_HEIGHT;
@@ -2183,19 +2287,15 @@ function HostEventCalendar({
                   MANAGE_TIMELINE_HOUR_HEIGHT;
 
                 return (
-                  <Pressable
+                  <View
                     accessibilityLabel={
                       isAvailable ? "가능 시간 해제" : "가능 시간 추가"
                     }
-                    accessibilityRole="button"
-                    disabled={isSaving}
                     key={cell.startAt}
-                    onPress={() => handleToggleAvailability(cell)}
-                    style={({ pressed }) => [
+                    style={[
                       styles.manageAvailabilityCell,
                       isAvailable && styles.manageAvailabilityCellActive,
                       { height, top },
-                      pressed && !isSaving && styles.pressed,
                     ]}
                   >
                     {isAvailable ? (
@@ -2203,7 +2303,7 @@ function HostEventCalendar({
                         가능
                       </Text>
                     ) : null}
-                  </Pressable>
+                  </View>
                 );
               })
             : visibleAvailabilityBlocks.map(({ block, overlap }) => {
@@ -2220,7 +2320,7 @@ function HostEventCalendar({
 
                 return (
                   <View
-                    key={block.id}
+                    key={`${block.startAt}-${block.endAt}`}
                     style={[
                       styles.manageAvailabilityBlock,
                       { height, top },
@@ -2230,6 +2330,17 @@ function HostEventCalendar({
                   </View>
                 );
               })}
+          {isEditingAvailability ? (
+            <DraggableTimelineSelectionLayer
+              cells={availabilityCells}
+              disabled={isSaving}
+              inactiveLabel="가능 해제"
+              isSelected={(cell) => isRangeInAvailableDrafts(draftBlocks, cell)}
+              onCommit={handleDragAvailabilityRange}
+              selectedLabel="가능 추가"
+              timelineStart={timelineBounds.start}
+            />
+          ) : null}
           {visibleSlots.map(({ overlap, slot }) => {
             const participants = getParticipantsForSlot(event, slot);
             const participantLabel =
@@ -3214,54 +3325,11 @@ function EventReserveScreen({
               </Text>
             </View>
 
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={styles.manageDateScroller}
-            >
-              <View style={styles.manageDateChipRow}>
-                {eventDetail.activeDates.map((dateKey) => {
-                  const parsedDate = parseDateValue(dateKey);
-                  const isSelected = dateKey === currentDate;
-                  const weekday = parsedDate.getDay();
-
-                  return (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityState={{ selected: isSelected }}
-                      key={dateKey}
-                      onPress={() => setSelectedDate(dateKey)}
-                      style={({ pressed }) => [
-                        styles.manageDateChip,
-                        isSelected && styles.manageDateChipActive,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.manageDateChipDate,
-                          weekday === 0 && styles.sundayText,
-                          weekday === 6 && styles.saturdayText,
-                          isSelected && styles.manageDateChipDateActive,
-                        ]}
-                      >
-                        {formatShortDate(dateKey)}
-                      </Text>
-                      <Text
-                        style={[
-                          styles.manageDateChipWeekday,
-                          weekday === 0 && styles.sundayText,
-                          weekday === 6 && styles.saturdayText,
-                          isSelected && styles.manageDateChipWeekdayActive,
-                        ]}
-                      >
-                        {formatWeekday(dateKey)}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </ScrollView>
+            <DateStripNavigator
+              dates={eventDetail.activeDates}
+              onSelectDate={setSelectedDate}
+              selectedDate={currentDate ?? eventDetail.activeDates[0] ?? null}
+            />
 
             <View style={styles.manageTimeline}>
               <View style={styles.manageTimelineTimeColumn}>
@@ -3305,28 +3373,35 @@ function EventReserveScreen({
                     MANAGE_TIMELINE_HOUR_HEIGHT;
 
                   return (
-                    <Pressable
+                    <View
                       accessibilityRole="button"
                       key={cell.startAt}
-                      onPress={() =>
-                        setSelectedSlots((current) =>
-                          toggleCandidateSlots(current, cell),
-                        )
-                      }
-                      style={({ pressed }) => [
+                      style={[
                         styles.reserveCandidateCell,
                         isAvailable && styles.reserveCandidateCellAvailable,
                         isSelected && styles.reserveCandidateCellSelected,
                         { height, top },
-                        pressed && styles.pressed,
                       ]}
                     >
                       {isSelected ? (
                         <Text style={styles.reserveCandidateCellText}>후보</Text>
                       ) : null}
-                    </Pressable>
+                    </View>
                   );
                 })}
+                <DraggableTimelineSelectionLayer
+                  cells={cells}
+                  disabled={isLoading || isEventLoading}
+                  inactiveLabel="후보 해제"
+                  isSelected={(cell) => isRangeInCandidateSlots(selectedSlots, cell)}
+                  onCommit={(range, shouldSelect) =>
+                    setSelectedSlots((current) =>
+                      setCandidateSlotRange(current, range, shouldSelect),
+                    )
+                  }
+                  selectedLabel="후보 추가"
+                  timelineStart={startMinute}
+                />
                 {visibleBufferRanges.map(({ overlap, range }, index) => (
                   <View
                     key={`${range.startAt}-${index}`}
@@ -3739,54 +3814,11 @@ function ReservationManageScreen({
               </Text>
             </View>
 
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={styles.manageDateScroller}
-            >
-              <View style={styles.manageDateChipRow}>
-                {detail.activeDates.map((dateKey) => {
-                  const parsedDate = parseDateValue(dateKey);
-                  const isSelected = dateKey === currentDate;
-                  const weekday = parsedDate.getDay();
-
-                  return (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityState={{ selected: isSelected }}
-                      key={dateKey}
-                      onPress={() => setSelectedDate(dateKey)}
-                      style={({ pressed }) => [
-                        styles.manageDateChip,
-                        isSelected && styles.manageDateChipActive,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.manageDateChipDate,
-                          weekday === 0 && styles.sundayText,
-                          weekday === 6 && styles.saturdayText,
-                          isSelected && styles.manageDateChipDateActive,
-                        ]}
-                      >
-                        {formatShortDate(dateKey)}
-                      </Text>
-                      <Text
-                        style={[
-                          styles.manageDateChipWeekday,
-                          weekday === 0 && styles.sundayText,
-                          weekday === 6 && styles.saturdayText,
-                          isSelected && styles.manageDateChipWeekdayActive,
-                        ]}
-                      >
-                        {formatWeekday(dateKey)}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </ScrollView>
+            <DateStripNavigator
+              dates={detail.activeDates}
+              onSelectDate={setSelectedDate}
+              selectedDate={currentDate ?? detail.activeDates[0] ?? null}
+            />
 
             <View style={styles.manageTimeline}>
               <View style={styles.manageTimelineTimeColumn}>
@@ -3830,28 +3862,35 @@ function ReservationManageScreen({
                     MANAGE_TIMELINE_HOUR_HEIGHT;
 
                   return (
-                    <Pressable
+                    <View
                       accessibilityRole="button"
                       key={cell.startAt}
-                      onPress={() =>
-                        setSelectedSlots((current) =>
-                          toggleCandidateSlots(current, cell),
-                        )
-                      }
-                      style={({ pressed }) => [
+                      style={[
                         styles.reserveCandidateCell,
                         isAvailable && styles.reserveCandidateCellAvailable,
                         isSelected && styles.reserveCandidateCellSelected,
                         { height, top },
-                        pressed && styles.pressed,
                       ]}
                     >
                       {isSelected ? (
                         <Text style={styles.reserveCandidateCellText}>후보</Text>
                       ) : null}
-                    </Pressable>
+                    </View>
                   );
                 })}
+                <DraggableTimelineSelectionLayer
+                  cells={cells}
+                  disabled={isLoading || isDetailLoading}
+                  inactiveLabel="후보 해제"
+                  isSelected={(cell) => isRangeInCandidateSlots(selectedSlots, cell)}
+                  onCommit={(range, shouldSelect) =>
+                    setSelectedSlots((current) =>
+                      setCandidateSlotRange(current, range, shouldSelect),
+                    )
+                  }
+                  selectedLabel="후보 추가"
+                  timelineStart={startMinute}
+                />
                 {visibleBufferRanges.map(({ overlap, range }, index) => (
                   <View
                     key={`${range.startAt}-${index}`}
@@ -3997,6 +4036,428 @@ function EmptyCard({
     <View style={styles.emptyCard}>
       <Text style={styles.emptyTitle}>{title}</Text>
       <Text style={styles.emptyDetail}>{detail}</Text>
+    </View>
+  );
+}
+
+function DateStripNavigator({
+  dates,
+  onSelectDate,
+  selectedDate,
+}: {
+  dates: string[];
+  onSelectDate: (date: string) => void;
+  selectedDate: string | null;
+}) {
+  const sortedDates = useMemo(
+    () =>
+      [...new Set(dates)]
+        .filter(isDateInputValue)
+        .sort((left, right) => left.localeCompare(right)),
+    [dates],
+  );
+  const todayKey = buildDateKey(new Date());
+  const currentDate =
+    selectedDate && sortedDates.includes(selectedDate)
+      ? selectedDate
+      : sortedDates[0] ?? null;
+  const currentIndex = currentDate ? sortedDates.indexOf(currentDate) : -1;
+  const monthDate = currentDate ? parseDateValue(currentDate) : new Date();
+  const [isMonthPickerVisible, setIsMonthPickerVisible] = useState(false);
+
+  if (sortedDates.length === 0 || !currentDate) {
+    return null;
+  }
+
+  function selectDateAt(index: number) {
+    const nextDate = sortedDates[index];
+
+    if (nextDate) {
+      onSelectDate(nextDate);
+    }
+  }
+
+  function handleSelectMonth(nextMonth: Date) {
+    const nextMonthKey = buildMonthKey(nextMonth);
+    const nextDate =
+      sortedDates.find(
+        (dateKey) => buildMonthKey(parseDateValue(dateKey)) === nextMonthKey,
+      ) ?? sortedDates[0];
+
+    onSelectDate(nextDate);
+    setIsMonthPickerVisible(false);
+  }
+
+  return (
+    <View style={styles.dateNavigator}>
+      <View style={styles.dateNavigatorHeader}>
+        <Pressable
+          accessibilityLabel="이전 날짜"
+          accessibilityRole="button"
+          disabled={currentIndex <= 0}
+          onPress={() => selectDateAt(currentIndex - 1)}
+          style={({ pressed }) => [
+            styles.dateNavButton,
+            currentIndex <= 0 && styles.dateNavButtonDisabled,
+            pressed && currentIndex > 0 && styles.pressed,
+          ]}
+        >
+          <Text
+            style={[
+              styles.dateNavButtonText,
+              currentIndex <= 0 && styles.dateNavButtonTextDisabled,
+            ]}
+          >
+            ‹
+          </Text>
+        </Pressable>
+        <Pressable
+          accessibilityLabel="연월 선택"
+          accessibilityRole="button"
+          onPress={() => setIsMonthPickerVisible(true)}
+          style={({ pressed }) => [
+            styles.dateMonthButton,
+            pressed && styles.pressed,
+          ]}
+        >
+          <Text style={styles.dateMonthButtonText}>
+            {formatMonthTitle(monthDate)}
+          </Text>
+        </Pressable>
+        <View style={styles.dateNavigatorRight}>
+          {sortedDates.includes(todayKey) ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => onSelectDate(todayKey)}
+              style={({ pressed }) => [
+                styles.dateTodayButton,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.dateTodayButtonText}>오늘</Text>
+            </Pressable>
+          ) : null}
+          <Pressable
+            accessibilityLabel="다음 날짜"
+            accessibilityRole="button"
+            disabled={currentIndex >= sortedDates.length - 1}
+            onPress={() => selectDateAt(currentIndex + 1)}
+            style={({ pressed }) => [
+              styles.dateNavButton,
+              currentIndex >= sortedDates.length - 1 &&
+                styles.dateNavButtonDisabled,
+              pressed &&
+                currentIndex < sortedDates.length - 1 &&
+                styles.pressed,
+            ]}
+          >
+            <Text
+              style={[
+                styles.dateNavButtonText,
+                currentIndex >= sortedDates.length - 1 &&
+                  styles.dateNavButtonTextDisabled,
+              ]}
+            >
+              ›
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.manageDateScroller}
+      >
+        <View style={styles.manageDateChipRow}>
+          {sortedDates.map((dateKey) => {
+            const parsedDate = parseDateValue(dateKey);
+            const isSelected = dateKey === currentDate;
+            const isToday = dateKey === todayKey;
+            const weekday = parsedDate.getDay();
+
+            return (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ selected: isSelected }}
+                key={dateKey}
+                onPress={() => onSelectDate(dateKey)}
+                style={({ pressed }) => [
+                  styles.manageDateChip,
+                  isSelected && styles.manageDateChipActive,
+                  isToday && !isSelected && styles.manageDateChipToday,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.manageDateChipDate,
+                    weekday === 0 && styles.sundayText,
+                    weekday === 6 && styles.saturdayText,
+                    isSelected && styles.manageDateChipDateActive,
+                  ]}
+                >
+                  {formatShortDate(dateKey)}
+                </Text>
+                <Text
+                  style={[
+                    styles.manageDateChipWeekday,
+                    weekday === 0 && styles.sundayText,
+                    weekday === 6 && styles.saturdayText,
+                    isSelected && styles.manageDateChipWeekdayActive,
+                  ]}
+                >
+                  {formatWeekday(dateKey)}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </ScrollView>
+
+      <MonthPickerModal
+        activeDates={sortedDates}
+        key={buildMonthKey(monthDate)}
+        monthDate={monthDate}
+        onClose={() => setIsMonthPickerVisible(false)}
+        onSelectMonth={handleSelectMonth}
+        visible={isMonthPickerVisible}
+      />
+    </View>
+  );
+}
+
+function MonthPickerModal({
+  activeDates,
+  monthDate,
+  onClose,
+  onSelectMonth,
+  visible,
+}: {
+  activeDates?: string[];
+  monthDate: Date;
+  onClose: () => void;
+  onSelectMonth: (monthDate: Date) => void;
+  visible: boolean;
+}) {
+  const [displayYear, setDisplayYear] = useState(monthDate.getFullYear());
+  const activeMonthKeys = useMemo(
+    () =>
+      activeDates
+        ? new Set(
+            activeDates
+              .filter(isDateInputValue)
+              .map((dateKey) => buildMonthKey(parseDateValue(dateKey))),
+          )
+        : null,
+    [activeDates],
+  );
+
+  return (
+    <Modal
+      animationType="fade"
+      onRequestClose={onClose}
+      transparent
+      visible={visible}
+    >
+      <Pressable
+        accessibilityRole="button"
+        onPress={onClose}
+        style={styles.modalBackdrop}
+      >
+        <Pressable
+          onPress={(event) => event.stopPropagation()}
+          style={styles.monthPickerPanel}
+        >
+          <View style={styles.monthPickerHeader}>
+            <Pressable
+              accessibilityLabel="이전 연도"
+              accessibilityRole="button"
+              onPress={() => setDisplayYear((year) => year - 1)}
+              style={({ pressed }) => [
+                styles.monthPickerArrow,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.monthPickerArrowText}>‹</Text>
+            </Pressable>
+            <Text style={styles.monthPickerTitle}>{displayYear}년</Text>
+            <Pressable
+              accessibilityLabel="다음 연도"
+              accessibilityRole="button"
+              onPress={() => setDisplayYear((year) => year + 1)}
+              style={({ pressed }) => [
+                styles.monthPickerArrow,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.monthPickerArrowText}>›</Text>
+            </Pressable>
+          </View>
+          <View style={styles.monthPickerGrid}>
+            {Array.from({ length: 12 }, (_, monthIndex) => {
+              const optionDate = new Date(displayYear, monthIndex, 1);
+              const monthKey = buildMonthKey(optionDate);
+              const isSelected = buildMonthKey(monthDate) === monthKey;
+              const isDisabled =
+                activeMonthKeys !== null && !activeMonthKeys.has(monthKey);
+
+              return (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: isDisabled, selected: isSelected }}
+                  disabled={isDisabled}
+                  key={monthKey}
+                  onPress={() => onSelectMonth(optionDate)}
+                  style={({ pressed }) => [
+                    styles.monthPickerOption,
+                    isSelected && styles.monthPickerOptionActive,
+                    isDisabled && styles.monthPickerOptionDisabled,
+                    pressed && !isDisabled && styles.pressed,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.monthPickerOptionText,
+                      isSelected && styles.monthPickerOptionTextActive,
+                      isDisabled && styles.monthPickerOptionTextDisabled,
+                    ]}
+                  >
+                    {monthIndex + 1}월
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function DraggableTimelineSelectionLayer({
+  cells,
+  disabled,
+  inactiveLabel,
+  isSelected,
+  onCommit,
+  selectedLabel,
+  timelineStart,
+}: {
+  cells: MobileTimelineCell[];
+  disabled?: boolean;
+  inactiveLabel: string;
+  isSelected: (cell: MobileTimelineCell) => boolean;
+  onCommit: (range: MobileTimeRange, shouldSelect: boolean) => void;
+  selectedLabel: string;
+  timelineStart: number;
+}) {
+  const [dragState, setDragState] = useState<{
+    currentIndex: number;
+    shouldSelect: boolean;
+    startIndex: number;
+  } | null>(null);
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: () =>
+          !disabled && cells.length > 0,
+        onStartShouldSetPanResponder: () =>
+          !disabled && cells.length > 0,
+        onPanResponderGrant: (event) => {
+          const cellIndex = getTimelineCellIndexFromY(
+            event.nativeEvent.locationY,
+            cells,
+            timelineStart,
+          );
+          const cell = cells[cellIndex];
+
+          if (!cell) {
+            return;
+          }
+
+          setDragState({
+            currentIndex: cellIndex,
+            shouldSelect: !isSelected(cell),
+            startIndex: cellIndex,
+          });
+        },
+        onPanResponderMove: (event) => {
+          const cellIndex = getTimelineCellIndexFromY(
+            event.nativeEvent.locationY,
+            cells,
+            timelineStart,
+          );
+
+          setDragState((currentDrag) =>
+            currentDrag && cellIndex !== currentDrag.currentIndex
+              ? { ...currentDrag, currentIndex: cellIndex }
+              : currentDrag,
+          );
+        },
+        onPanResponderRelease: () => {
+          setDragState((currentDrag) => {
+            if (!currentDrag) {
+              return null;
+            }
+
+            const range = buildTimelineRangeFromIndexes(
+              cells,
+              currentDrag.startIndex,
+              currentDrag.currentIndex,
+            );
+
+            if (range) {
+              onCommit(range, currentDrag.shouldSelect);
+            }
+
+            return null;
+          });
+        },
+        onPanResponderTerminate: () => setDragState(null),
+      }),
+    [cells, disabled, isSelected, onCommit, timelineStart],
+  );
+  const previewRange = dragState
+    ? buildTimelineRangeFromIndexes(
+        cells,
+        dragState.startIndex,
+        dragState.currentIndex,
+      )
+    : null;
+
+  return (
+    <View style={styles.timelineDragLayer} {...panResponder.panHandlers}>
+      {previewRange ? (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.timelineDragPreview,
+            dragState?.shouldSelect
+              ? styles.timelineDragPreviewAdd
+              : styles.timelineDragPreviewRemove,
+            getTimelineOverlayStyle(
+              {
+                end: previewRange.endMinute,
+                start: previewRange.startMinute,
+              },
+              timelineStart,
+            ),
+          ]}
+        >
+          <Text
+            style={[
+              styles.timelineDragPreviewText,
+              dragState?.shouldSelect
+                ? styles.timelineDragPreviewTextAdd
+                : styles.timelineDragPreviewTextRemove,
+            ]}
+          >
+            {dragState?.shouldSelect ? selectedLabel : inactiveLabel}
+          </Text>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -4288,7 +4749,7 @@ function buildAvailabilityCells(
   dateKey: string,
   dailyStartTime: string,
   dailyEndTime: string,
-) {
+): MobileTimelineCell[] {
   const startMinute = getDailyStartMinute(dailyStartTime);
   const endMinute = getDailyEndMinute(dailyStartTime, dailyEndTime);
   const cells: Array<{
@@ -4358,47 +4819,134 @@ function isRangeInCandidateSlots(
   );
 }
 
-function toggleCandidateSlots(
+function setCandidateSlotRange(
   slots: Array<{ endAt: string; startAt: string }>,
   range: { endAt: string; startAt: string },
+  shouldSelect: boolean,
 ) {
-  if (isRangeInCandidateSlots(slots, range)) {
+  if (!shouldSelect) {
     return slots.flatMap((slot) => subtractMobileTimeRange(slot, range));
   }
 
   return mergeMobileRanges([...slots, range]);
 }
 
-function toggleMobileAvailabilityBlocks(
-  blocks: MobileTimeBlock[],
-  range: { endAt: string; startAt: string },
-): MobileTimeBlockDraft[] {
-  const drafts = blocks.map<MobileTimeBlockDraft>((block) => ({
+function createMobileTimeBlockDrafts(blocks: MobileTimeBlock[]) {
+  return blocks.map<MobileTimeBlockDraft>((block) => ({
     endAt: block.end_at,
     note: block.note,
     startAt: block.start_at,
     type: block.type,
   }));
+}
+
+function buildMobileTimeBlockDraftKey(blocks: MobileTimeBlockDraft[]) {
+  return mergeMobileTimeBlockDrafts(blocks)
+    .map(
+      (block) =>
+        `${block.type}:${block.startAt}:${block.endAt}:${block.note ?? ""}`,
+    )
+    .join("|");
+}
+
+function isRangeInAvailableDrafts(
+  blocks: MobileTimeBlockDraft[],
+  range: { endAt: string; startAt: string },
+) {
+  const start = parseDateValue(range.startAt).getTime();
+  const end = parseDateValue(range.endAt).getTime();
+
+  return blocks.some((block) => {
+    if (block.type !== "AVAILABLE") {
+      return false;
+    }
+
+    const blockStart = parseDateValue(block.startAt).getTime();
+    const blockEnd = parseDateValue(block.endAt).getTime();
+
+    return blockStart <= start && end <= blockEnd;
+  });
+}
+
+function setMobileAvailabilityDraftRange(
+  blocks: MobileTimeBlockDraft[],
+  range: { endAt: string; startAt: string },
+  shouldBeAvailable: boolean,
+): MobileTimeBlockDraft[] {
+  const drafts = blocks.map<MobileTimeBlockDraft>((block) => ({ ...block }));
   const availableBlocks = drafts.filter((block) => block.type === "AVAILABLE");
   const otherBlocks = drafts.filter((block) => block.type !== "AVAILABLE");
-  const nextAvailableBlocks = isRangeInAvailableBlocks(blocks, range)
-    ? availableBlocks.flatMap((block) =>
-        subtractMobileTimeRange(block, range).map((piece) => ({
-          ...piece,
-          note: block.note ?? null,
-          type: "AVAILABLE" as const,
-        })),
-      )
-    : [
+  const nextAvailableBlocks = shouldBeAvailable
+    ? [
         ...availableBlocks,
         {
           ...range,
           note: null,
           type: "AVAILABLE" as const,
         },
-      ];
+      ]
+    : availableBlocks.flatMap((block) =>
+        subtractMobileTimeRange(block, range).map((piece) => ({
+          ...piece,
+          note: block.note ?? null,
+          type: "AVAILABLE" as const,
+        })),
+      );
 
   return mergeMobileTimeBlockDrafts([...otherBlocks, ...nextAvailableBlocks]);
+}
+
+function getTimelineCellIndexFromY(
+  locationY: number,
+  cells: MobileTimelineCell[],
+  timelineStart: number,
+) {
+  if (cells.length === 0) {
+    return -1;
+  }
+
+  const minuteAtY =
+    timelineStart +
+    (Math.max(0, locationY) / MANAGE_TIMELINE_HOUR_HEIGHT) * 60;
+  const matchingIndex = cells.findIndex(
+    (cell) => cell.startMinute <= minuteAtY && minuteAtY < cell.endMinute,
+  );
+
+  if (matchingIndex >= 0) {
+    return matchingIndex;
+  }
+
+  if (minuteAtY < cells[0].startMinute) {
+    return 0;
+  }
+
+  return cells.length - 1;
+}
+
+function buildTimelineRangeFromIndexes(
+  cells: MobileTimelineCell[],
+  startIndex: number,
+  endIndex: number,
+) {
+  if (cells.length === 0 || startIndex < 0 || endIndex < 0) {
+    return null;
+  }
+
+  const firstIndex = Math.min(startIndex, endIndex);
+  const lastIndex = Math.max(startIndex, endIndex);
+  const firstCell = cells[firstIndex];
+  const lastCell = cells[lastIndex];
+
+  if (!firstCell || !lastCell) {
+    return null;
+  }
+
+  return {
+    endAt: lastCell.endAt,
+    endMinute: lastCell.endMinute,
+    startAt: firstCell.startAt,
+    startMinute: firstCell.startMinute,
+  };
 }
 
 function mergeMobileRanges(ranges: Array<{ endAt: string; startAt: string }>) {
@@ -4903,6 +5451,20 @@ function buildDateKey(date: Date) {
   return `${date.getFullYear()}-${month}-${day}`;
 }
 
+function buildMonthKey(date: Date) {
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+
+  return `${date.getFullYear()}-${month}`;
+}
+
+function addMonthsToDate(date: Date, amount: number) {
+  return new Date(date.getFullYear(), date.getMonth() + amount, 1);
+}
+
+function formatMonthTitle(date: Date) {
+  return `${date.getFullYear()}년 ${date.getMonth() + 1}월`;
+}
+
 function buildDateList(dateStart: string, dateEnd: string) {
   const dates: string[] = [];
   const current = parseDateValue(dateStart);
@@ -5067,6 +5629,65 @@ const styles = StyleSheet.create({
     color: MUTED,
     fontSize: 13,
     fontWeight: "800",
+  },
+  dateMonthButton: {
+    alignItems: "center",
+    flex: 1,
+    justifyContent: "center",
+    minHeight: 36,
+  },
+  dateMonthButtonText: {
+    color: INK,
+    fontFamily: serifFont,
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  dateNavButton: {
+    alignItems: "center",
+    backgroundColor: "#F9FAFB",
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    height: 36,
+    justifyContent: "center",
+    width: 42,
+  },
+  dateNavButtonDisabled: {
+    opacity: 0.35,
+  },
+  dateNavButtonText: {
+    color: PRIMARY,
+    fontSize: 25,
+    fontWeight: "600",
+    lineHeight: 28,
+  },
+  dateNavButtonTextDisabled: {
+    color: SUBTLE,
+  },
+  dateNavigator: {
+    gap: 10,
+  },
+  dateNavigatorHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  dateNavigatorRight: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 6,
+  },
+  dateTodayButton: {
+    alignItems: "center",
+    minHeight: 36,
+    justifyContent: "center",
+    paddingHorizontal: 4,
+  },
+  dateTodayButtonText: {
+    color: PRIMARY,
+    fontSize: 12,
+    fontWeight: "900",
+    textDecorationLine: "underline",
   },
   dangerButton: {
     alignItems: "center",
@@ -5379,11 +6000,107 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 12,
   },
+  monthHeaderRight: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 6,
+  },
+  monthNavButton: {
+    alignItems: "center",
+    backgroundColor: "#F9FAFB",
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    height: 38,
+    justifyContent: "center",
+    width: 38,
+  },
+  monthNavText: {
+    color: PRIMARY,
+    fontSize: 26,
+    fontWeight: "600",
+    lineHeight: 28,
+  },
+  monthPickerArrow: {
+    alignItems: "center",
+    backgroundColor: "#F9FAFB",
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    height: 38,
+    justifyContent: "center",
+    width: 38,
+  },
+  monthPickerArrowText: {
+    color: PRIMARY,
+    fontSize: 26,
+    fontWeight: "600",
+    lineHeight: 28,
+  },
+  monthPickerGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  monthPickerHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  monthPickerOption: {
+    alignItems: "center",
+    backgroundColor: "#F9FAFB",
+    borderColor: BORDER,
+    borderRadius: 8,
+    borderWidth: 1,
+    minHeight: 42,
+    justifyContent: "center",
+    width: "30.5%",
+  },
+  monthPickerOptionActive: {
+    backgroundColor: PRIMARY,
+    borderColor: PRIMARY,
+  },
+  monthPickerOptionDisabled: {
+    opacity: 0.28,
+  },
+  monthPickerOptionText: {
+    color: INK,
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  monthPickerOptionTextActive: {
+    color: BACKGROUND,
+  },
+  monthPickerOptionTextDisabled: {
+    color: SUBTLE,
+  },
+  monthPickerPanel: {
+    backgroundColor: BACKGROUND,
+    borderColor: BORDER,
+    borderRadius: 12,
+    borderWidth: 1,
+    gap: 14,
+    padding: 16,
+    width: "86%",
+  },
+  monthPickerTitle: {
+    color: INK,
+    fontFamily: serifFont,
+    fontSize: 22,
+    fontWeight: "700",
+  },
   monthTitle: {
     color: INK,
     fontFamily: serifFont,
     fontSize: 23,
     fontWeight: "700",
+  },
+  monthTitleButton: {
+    alignItems: "center",
+    flex: 1,
+    justifyContent: "center",
+    minHeight: 38,
   },
   manageCalendarCard: {
     backgroundColor: BACKGROUND,
@@ -5534,6 +6251,10 @@ const styles = StyleSheet.create({
   manageEditButtonTextActive: {
     color: BACKGROUND,
   },
+  manageEditActionRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
   manageTimeline: {
     flexDirection: "row",
     gap: 10,
@@ -5647,6 +6368,19 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "900",
     textDecorationLine: "underline",
+  },
+  monthTodayButton: {
+    alignItems: "center",
+    minHeight: 38,
+    justifyContent: "center",
+    paddingHorizontal: 2,
+  },
+  modalBackdrop: {
+    alignItems: "center",
+    backgroundColor: "rgba(17, 24, 39, 0.25)",
+    flex: 1,
+    justifyContent: "center",
+    padding: 18,
   },
   pendingDot: {
     backgroundColor: PENDING,
@@ -6145,6 +6879,42 @@ const styles = StyleSheet.create({
     color: MUTED,
     fontSize: 12,
     fontWeight: "800",
+  },
+  timelineDragLayer: {
+    bottom: 0,
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
+    zIndex: 20,
+  },
+  timelineDragPreview: {
+    alignItems: "center",
+    borderRadius: 8,
+    borderWidth: 1,
+    justifyContent: "center",
+    left: 5,
+    paddingHorizontal: 8,
+    position: "absolute",
+    right: 5,
+  },
+  timelineDragPreviewAdd: {
+    backgroundColor: "rgba(0, 38, 75, 0.2)",
+    borderColor: "rgba(0, 38, 75, 0.42)",
+  },
+  timelineDragPreviewRemove: {
+    backgroundColor: "rgba(185, 80, 80, 0.14)",
+    borderColor: "rgba(185, 80, 80, 0.36)",
+  },
+  timelineDragPreviewText: {
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  timelineDragPreviewTextAdd: {
+    color: PRIMARY,
+  },
+  timelineDragPreviewTextRemove: {
+    color: "#B95050",
   },
   todayCell: {
     backgroundColor: PRIMARY,

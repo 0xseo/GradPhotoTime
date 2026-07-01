@@ -37,12 +37,12 @@ EXPO_PUBLIC_API_BASE_URL=http://10.0.2.2:3000 npm run android:local
 - Dashboard pull-to-refresh for hosted events, joined reservations, and calendar markers
 - Event creation with date range, daily time range, and buffer settings
 - Code lookup for event codes and reservation management codes
-- Host event management with confirmed/pending lists, approve/unconfirm, read-only schedule calendar, and tap-to-toggle availability editing
-- Guest event reservation creation with 30-minute candidate selection and reservation management code display
-- Reservation-code management with participant/headcount edits, pending candidate edits, password checks, and cancellation
+- Host event management with confirmed/pending lists, approve/unconfirm, date navigation, read-only schedule calendar, and draft-save drag availability editing
+- Guest event reservation creation with drag-based 30-minute candidate selection and reservation management code display
+- Reservation-code management with participant/headcount edits, drag-based pending candidate edits, password checks, and cancellation
 
 ## Remaining Mobile Work
 
-- Drag gestures and priority reordering for Guest candidate slots
+- Drag-based priority reordering for Guest candidate slots
 - Confirmed-slot resize/move and buffer add/remove/resize for Host management
 - QR/deep-link support with iOS Universal Links and Android App Links
