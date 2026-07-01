@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   BackHandler,
@@ -334,6 +334,7 @@ const SESSION_STORAGE_KEY = "grad-photo-time.mobile-session";
 const MANAGE_TIMELINE_HOUR_HEIGHT = 58;
 const MANAGE_TIMELINE_BLOCK_MIN_HEIGHT = 34;
 const CANDIDATE_REORDER_ROW_HEIGHT = 60;
+let gestureCommitSequence = 0;
 const serifFont = Platform.select({
   android: "serif",
   ios: "Georgia",
@@ -347,6 +348,11 @@ const tabs: Array<{ key: TabKey; label: string; title: string; icon: string }> =
     { key: "joined", label: "참여", title: "참여한 이벤트", icon: "J" },
     { key: "my", label: "My", title: "My", icon: "M" },
   ];
+
+function nextGestureCommitId() {
+  gestureCommitSequence += 1;
+  return gestureCommitSequence;
+}
 
 const schedules: ScheduleItem[] = [
   {
@@ -3748,10 +3754,25 @@ function DateRangeCalendarPicker({
     ? parseDateValue(dateStart)
     : new Date();
   const [dragState, setDragState] = useState<{
+    baseActiveDates: string[];
     currentDate: string;
     shouldActivate: boolean;
     startDate: string;
   } | null>(null);
+  const [commitState, setCommitState] = useState<{
+    baseActiveDates: string[];
+    currentDate: string;
+    id: number;
+    shouldActivate: boolean;
+    startDate: string;
+  } | null>(null);
+  const dragRef = useRef<{
+    baseActiveDates: string[];
+    currentDate: string;
+    shouldActivate: boolean;
+    startDate: string;
+  } | null>(null);
+  const handledCommitId = useRef(0);
   const [gridWidth, setGridWidth] = useState(0);
   const [isMonthPickerVisible, setIsMonthPickerVisible] = useState(false);
   const [visibleMonth, setVisibleMonth] = useState(
@@ -3824,8 +3845,32 @@ function DateRangeCalendarPicker({
     });
   }, [dateEnd, dateStart, onChange]);
 
+  useEffect(() => {
+    const current = commitState;
+
+    if (!current || handledCommitId.current === current.id) {
+      return;
+    }
+
+    handledCommitId.current = current.id;
+    const [selectionStart, selectionEnd] = sortDatePair(
+      current.startDate,
+      current.currentDate,
+    );
+
+    commitActiveDates(
+      applyActiveDateSelection(
+        current.baseActiveDates,
+        buildDateList(selectionStart, selectionEnd),
+        current.shouldActivate,
+      ),
+    );
+  }, [commitActiveDates, commitState]);
+
   const panResponder = useMemo(
     () =>
+      // PanResponder needs synchronous gesture refs so fast taps commit before React flushes preview state.
+      // eslint-disable-next-line react-hooks/refs
       PanResponder.create({
         onMoveShouldSetPanResponder: () => gridWidth > 0,
         onStartShouldSetPanResponder: () => gridWidth > 0,
@@ -3839,11 +3884,16 @@ function DateRangeCalendarPicker({
             return;
           }
 
-          setDragState({
+          const nextDrag = {
+            baseActiveDates: normalizedActiveDates,
             currentDate: nextDate,
             shouldActivate: !activeDateSet.has(nextDate),
             startDate: nextDate,
-          });
+          };
+
+          dragRef.current = nextDrag;
+          setCommitState(null);
+          setDragState(nextDrag);
         },
         onPanResponderMove: (event) => {
           const nextDate = getDateFromLocation(
@@ -3855,38 +3905,38 @@ function DateRangeCalendarPicker({
             return;
           }
 
-          setDragState((current) => {
-            if (!current) {
-              return current;
-            }
-
-            return { ...current, currentDate: nextDate };
-          });
-        },
-        onPanResponderRelease: () => {
-          if (dragState) {
-            const [selectionStart, selectionEnd] = sortDatePair(
-              dragState.startDate,
-              dragState.currentDate,
-            );
-
-            commitActiveDates(
-              applyActiveDateSelection(
-                normalizedActiveDates,
-                buildDateList(selectionStart, selectionEnd),
-                dragState.shouldActivate,
-              ),
-            );
+          if (!dragRef.current) {
+            return;
           }
 
+          const nextDrag = { ...dragRef.current, currentDate: nextDate };
+
+          dragRef.current = nextDrag;
+          setDragState((current) =>
+            current?.currentDate === nextDate ? current : nextDrag,
+          );
+        },
+        onPanResponderRelease: () => {
+          const currentDrag = dragRef.current;
+
+          dragRef.current = null;
+          setDragState(null);
+
+          if (!currentDrag) {
+            setCommitState(null);
+            return;
+          }
+
+          setCommitState({ ...currentDrag, id: nextGestureCommitId() });
+        },
+        onPanResponderTerminate: () => {
+          dragRef.current = null;
+          setCommitState(null);
           setDragState(null);
         },
-        onPanResponderTerminate: () => setDragState(null),
       }),
     [
       activeDateSet,
-      commitActiveDates,
-      dragState,
       getDateFromLocation,
       gridWidth,
       normalizedActiveDates,
@@ -3995,16 +4045,21 @@ function DateRangeCalendarPicker({
           return (
             <View
               key={dayKey ?? `blank-${index}`}
-              style={[
-                styles.dateRangeDay,
-                { height: cellHeight },
-                isActive && styles.dateRangeDayEndpoint,
-                isPreviewed &&
-                  dragState?.shouldActivate === true &&
-                  styles.dateRangeDayActivePreview,
-                isPreviewOff && styles.dateRangeDayInactivePreview,
-              ]}
+              style={[styles.dateRangeDay, { height: cellHeight }]}
             >
+              {dayKey ? (
+                <View
+                  pointerEvents="none"
+                  style={[
+                    styles.dateRangeDaySurface,
+                    isActive && styles.dateRangeDayEndpoint,
+                    isPreviewed &&
+                      dragState?.shouldActivate === true &&
+                      styles.dateRangeDayActivePreview,
+                    isPreviewOff && styles.dateRangeDayInactivePreview,
+                  ]}
+                />
+              ) : null}
               {dayKey ? (
                 <Text
                   style={[
@@ -5643,9 +5698,42 @@ function DraggableTimelineSelectionLayer({
     shouldSelect: boolean;
     startIndex: number;
   } | null>(null);
+  const [commitState, setCommitState] = useState<{
+    currentIndex: number;
+    id: number;
+    shouldSelect: boolean;
+    startIndex: number;
+  } | null>(null);
+  const dragRef = useRef<{
+    currentIndex: number;
+    shouldSelect: boolean;
+    startIndex: number;
+  } | null>(null);
+  const handledCommitId = useRef(0);
+
+  useEffect(() => {
+    const currentDrag = commitState;
+
+    if (!currentDrag || handledCommitId.current === currentDrag.id) {
+      return;
+    }
+
+    handledCommitId.current = currentDrag.id;
+    const range = buildTimelineRangeFromIndexes(
+      cells,
+      currentDrag.startIndex,
+      currentDrag.currentIndex,
+    );
+
+    if (range) {
+      onCommit(range, currentDrag.shouldSelect);
+    }
+  }, [cells, commitState, onCommit]);
 
   const panResponder = useMemo(
     () =>
+      // PanResponder needs synchronous gesture refs so fast taps commit before React flushes preview state.
+      // eslint-disable-next-line react-hooks/refs
       PanResponder.create({
         onMoveShouldSetPanResponder: () =>
           !disabled && cells.length > 0,
@@ -5663,11 +5751,15 @@ function DraggableTimelineSelectionLayer({
             return;
           }
 
-          setDragState({
+          const nextDrag = {
             currentIndex: cellIndex,
             shouldSelect: !isSelected(cell),
             startIndex: cellIndex,
-          });
+          };
+
+          dragRef.current = nextDrag;
+          setCommitState(null);
+          setDragState(nextDrag);
         },
         onPanResponderMove: (event) => {
           const cellIndex = getTimelineCellIndexFromY(
@@ -5676,34 +5768,35 @@ function DraggableTimelineSelectionLayer({
             timelineStart,
           );
 
-          setDragState((currentDrag) =>
-            currentDrag && cellIndex !== currentDrag.currentIndex
-              ? { ...currentDrag, currentIndex: cellIndex }
-              : currentDrag,
-          );
+          if (!dragRef.current || cellIndex === dragRef.current.currentIndex) {
+            return;
+          }
+
+          const nextDrag = { ...dragRef.current, currentIndex: cellIndex };
+
+          dragRef.current = nextDrag;
+          setDragState(nextDrag);
         },
         onPanResponderRelease: () => {
-          setDragState((currentDrag) => {
-            if (!currentDrag) {
-              return null;
-            }
+          const currentDrag = dragRef.current;
 
-            const range = buildTimelineRangeFromIndexes(
-              cells,
-              currentDrag.startIndex,
-              currentDrag.currentIndex,
-            );
+          dragRef.current = null;
+          setDragState(null);
 
-            if (range) {
-              onCommit(range, currentDrag.shouldSelect);
-            }
+          if (!currentDrag) {
+            setCommitState(null);
+            return;
+          }
 
-            return null;
-          });
+          setCommitState({ ...currentDrag, id: nextGestureCommitId() });
         },
-        onPanResponderTerminate: () => setDragState(null),
+        onPanResponderTerminate: () => {
+          dragRef.current = null;
+          setCommitState(null);
+          setDragState(null);
+        },
       }),
-    [cells, disabled, isSelected, onCommit, timelineStart],
+    [cells, disabled, isSelected, timelineStart],
   );
   const previewRange = dragState
     ? buildTimelineRangeFromIndexes(
@@ -5723,7 +5816,7 @@ function DraggableTimelineSelectionLayer({
             dragState?.shouldSelect
               ? styles.timelineDragPreviewAdd
               : styles.timelineDragPreviewRemove,
-            getTimelineOverlayStyle(
+            getTimelineSelectionOverlayStyle(
               {
                 end: previewRange.endMinute,
                 start: previewRange.startMinute,
@@ -6503,6 +6596,16 @@ function getTimelineOverlayStyle(
   };
 }
 
+function getTimelineSelectionOverlayStyle(
+  overlap: { end: number; start: number },
+  timelineStart: number,
+) {
+  return {
+    height: ((overlap.end - overlap.start) / 60) * MANAGE_TIMELINE_HOUR_HEIGHT,
+    top: ((overlap.start - timelineStart) / 60) * MANAGE_TIMELINE_HOUR_HEIGHT,
+  };
+}
+
 function parseParticipantNames(value: string) {
   return value
     .split(/[,\n]/)
@@ -7215,8 +7318,8 @@ const styles = StyleSheet.create({
   },
   dateRangeDay: {
     alignItems: "center",
-    borderRadius: 8,
     justifyContent: "center",
+    overflow: "hidden",
     position: "relative",
     width: "14.285%",
   },
@@ -7224,13 +7327,23 @@ const styles = StyleSheet.create({
     backgroundColor: PRIMARY_SOFT,
   },
   dateRangeDayActivePreview: {
-    backgroundColor: "rgba(0, 38, 75, 0.78)",
+    backgroundColor: PRIMARY,
+    borderRadius: 8,
   },
   dateRangeDayEndpoint: {
     backgroundColor: PRIMARY,
   },
   dateRangeDayInactivePreview: {
     backgroundColor: "rgba(185, 80, 80, 0.13)",
+    borderRadius: 8,
+  },
+  dateRangeDaySurface: {
+    borderRadius: 8,
+    bottom: 3,
+    left: 3,
+    position: "absolute",
+    right: 3,
+    top: 3,
   },
   dateRangeDayText: {
     color: INK,
@@ -8627,13 +8740,13 @@ const styles = StyleSheet.create({
   },
   timelineDragPreview: {
     alignItems: "center",
-    borderRadius: 8,
+    borderRadius: 5,
     borderWidth: 1,
     justifyContent: "center",
-    left: 5,
+    left: 6,
     paddingHorizontal: 8,
     position: "absolute",
-    right: 5,
+    right: 6,
   },
   timelineDragPreviewAdd: {
     backgroundColor: "rgba(0, 38, 75, 0.2)",
