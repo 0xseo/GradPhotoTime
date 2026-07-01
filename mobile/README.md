@@ -28,7 +28,7 @@ EXPO_PUBLIC_API_BASE_URL=http://10.0.2.2:3000 npm run android:local
 
 - Bottom tabs: `내 이벤트`, `달력`, `참여한 이벤트`, `My`
 - Floating `+`: create event or open the access-code entry flow depending on the active tab
-- Screens: native month calendar, host event list, joined reservation list, account/auth, event creation, unified code entry, Host event management, and Guest event reservation
+- Screens: native month calendar, host event list, joined reservation list, account/auth, event creation, unified code entry, Host event management, Guest event reservation, and reservation-code management
 
 ## Implemented Native Flows
 
@@ -39,10 +39,10 @@ EXPO_PUBLIC_API_BASE_URL=http://10.0.2.2:3000 npm run android:local
 - Code lookup for event codes and reservation management codes
 - Host event management with confirmed/pending lists, approve/unconfirm, read-only schedule calendar, and tap-to-toggle availability editing
 - Guest event reservation creation with 30-minute candidate selection and reservation management code display
+- Reservation-code management with participant/headcount edits, pending candidate edits, password checks, and cancellation
 
 ## Remaining Mobile Work
 
-- Reservation management screen for editing participants, candidate slots, and cancellation from a reservation code
 - Drag gestures and priority reordering for Guest candidate slots
 - Confirmed-slot resize/move and buffer add/remove/resize for Host management
 - QR/deep-link support with iOS Universal Links and Android App Links

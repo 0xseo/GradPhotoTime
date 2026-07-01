@@ -24,7 +24,7 @@ npm run android:local
 
 By default the mobile app calls `https://grad-photo-time.vercel.app`. Override it with `EXPO_PUBLIC_API_BASE_URL` when testing a local API.
 
-Current native mobile coverage includes email/password auth, dashboard/calendar data, event creation, code lookup, Host event management, Host availability editing, Host approve/unconfirm actions, and Guest event reservation creation.
+Current native mobile coverage includes email/password auth, dashboard/calendar data, event creation, code lookup, Host event management, Host availability editing, Host approve/unconfirm actions, Guest event reservation creation, and reservation-code management.
 
 ## Verification
 
